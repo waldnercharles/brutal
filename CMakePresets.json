@@ -1,0 +1,54 @@
+{
+    "version": 10,
+    "configurePresets": [
+        {
+            "name": "default",
+            "displayName": "Default",
+            "generator": "Ninja Multi-Config",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "gcc",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+                "CMAKE_CROSS_CONFIGS": "all"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "default",
+            "displayName": "Default",
+            "configurePreset": "default",
+            "targets": [
+                "all:all"
+            ]
+        },
+        {
+            "name": "debug",
+            "displayName": "Debug",
+            "configurePreset": "default",
+            "configuration": "Debug",
+            "nativeToolOptions": [
+                "--quiet"
+            ]
+        },
+        {
+            "name": "release",
+            "displayName": "Release",
+            "configurePreset": "default",
+            "configuration": "Release",
+            "nativeToolOptions": [
+                "--quiet"
+            ]
+        },
+        {
+            "name": "relwithdebinfo",
+            "displayName": "RelWithDebInfo",
+            "configurePreset": "default",
+            "configuration": "RelWithDebInfo",
+            "nativeToolOptions": [
+                "--quiet"
+            ]
+        }
+    ]
+}

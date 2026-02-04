@@ -1,0 +1,87 @@
+#BasedOnStyle: Mozilla
+
+# The extra indent or outdent of access modifiers, e.g. public:.
+#BreakBeforeBinaryOperators: None
+#ConstructorInitializerAllOnOneLineOrOnePerLine: false
+#ContinuationIndentWidth: 4
+#DerivePointerAlignment: false
+#DisableFormat: false
+#ForEachMacros (std::vector<std::string>)
+#IndentWrappedFunctionNames: false
+#KeepEmptyLinesAtTheStartOfBlocks: false
+#MaxEmptyLinesToKeep: 0
+#NamespaceIndentation: Inner
+#ObjCBlockIndentWidth: 4
+#ObjCSpaceAfterProperty: false
+#ObjCSpaceBeforeProtocolList: false
+#PenaltyBreakBeforeFirstCallParameter (unsigned)
+#PenaltyBreakComment (unsigned)
+#PenaltyBreakFirstLessLess (unsigned)
+#PenaltyBreakString (unsigned)
+#PenaltyExcessCharacter (unsigned)
+#PenaltyReturnTypeOnItsOwnLine (unsigned)
+#SpaceBeforeAssignmentOperators: true
+BasedOnStyle: Mozilla
+AccessModifierOffset: -4
+AlignAfterOpenBracket: BlockIndent
+AlignConsecutiveAssignments: None
+AlignConsecutiveMacros: None
+AlignEscapedNewlines: Right
+AlignOperands: AlignAfterOperator
+AlignTrailingComments: true
+AllowAllArgumentsOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowShortBlocksOnASingleLine: Always
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+AllowShortLoopsOnASingleLine: true
+AlwaysBreakAfterDefinitionReturnType: None
+AlwaysBreakAfterReturnType: None
+AlwaysBreakBeforeMultilineStrings: false
+AlwaysBreakTemplateDeclarations: Yes
+BinPackArguments: false
+BinPackParameters: OnePerLine
+BreakAfterReturnType: None
+BreakBeforeBraces: Mozilla
+BreakBeforeTernaryOperators: true
+ColumnLimit: 80
+CommentPragmas: "\/*(.*)*\/"
+ContinuationIndentWidth: 4
+Cpp11BracedListStyle: false
+ExperimentalAutoDetectBinPacking: false
+ForEachMacros:
+    - foreach
+StatementMacros:
+    - ECS_CTOR
+    - ECS_DTOR
+    - ECS_COPY
+    - ECS_MOVE
+    - ECS_ON_ADD
+    - ECS_ON_REMOVE
+    - ECS_ON_SET
+    - ECS_ON_REPLACE
+IncludeBlocks: Regroup
+IndentCaseLabels: true
+IndentWidth: 4
+Language: C
+PenaltyBreakAssignment: 1000
+PenaltyBreakBeforeFirstCallParameter: 156
+PenaltyBreakComment: 250
+PenaltyBreakString: 500
+PenaltyExcessCharacter: 2
+PenaltyReturnTypeOnItsOwnLine: 1000000
+PointerAlignment: Right
+ReflowComments: Always
+SpaceAfterCStyleCast: false
+SpaceBeforeParens: ControlStatementsExceptControlMacros
+SpaceInEmptyParentheses: false
+SpacesBeforeTrailingComments: 1
+SpacesInAngles: Never
+SpacesInCStyleCastParentheses: false
+SpacesInContainerLiterals: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+Standard: Latest
+TabWidth: 4
+UseTab: Never
