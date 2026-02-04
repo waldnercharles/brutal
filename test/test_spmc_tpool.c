@@ -1,4 +1,6 @@
 #include "pico_unit.h"
+#define SPMC_TPOOL_STATIC
+#define SPMC_TPOOL_IMPLEMENTATION
 #include "spmc_tpool_box2d.h"
 
 #include <stdatomic.h>
