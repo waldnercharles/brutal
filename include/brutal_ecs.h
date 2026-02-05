@@ -2,8 +2,40 @@
  * brutal_ecs.h - Spartan single-header ECS
  *
  * Thread-safe entity component system with automatic command buffering for
- * structural changes during system execution. Heavily inspired by pico_ecs.
- * https://github.com/empyreanx/pico_headers/blob/main/pico_ecs.h
+ * structural changes during system execution.
+ *
+ * Heavily inspired by: https://github.com/empyreanx/pico_headers/blob/main/pico_ecs.h
+ *
+ * USAGE EXAMPLE:
+ *   typedef struct { float x, y; } Position;
+ *
+ *   static int move_system(ecs_t *ecs, ecs_view *view, void *udata)
+ *   {
+ *       ecs_comp_t pos_comp = *(ecs_comp_t *)udata;
+ *       for (int i = 0; i < view->count; i++) {
+ *           ecs_entity e = view->entities[i];
+ *           Position *pos = (Position *)ecs_get(ecs, e, pos_comp);
+ *           pos->x += 1.0f;
+ *       }
+ *       return 0;
+ *   }
+ *
+ *   int main()
+ *   {
+ *       ecs_t *ecs = ecs_new();
+ *       ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
+ *       ecs_entity e = ecs_create(ecs);
+ *       Position *pos = (Position *)ecs_add(ecs, e, pos_comp);
+ *       pos->x = 0.0f;
+ *       pos->y = 0.0f;
+ *
+ *       ecs_sys_t move = ecs_sys_create(ecs, move_system, &pos_comp);
+ *       ecs_sys_require(ecs, move, pos_comp);
+ *       ecs_progress(ecs, 0);
+ *
+ *       ecs_free(ecs);
+ *       return 0;
+ *   }
  *
  * REQUIREMENTS:
  *   - C11 atomics (stdatomic.h)

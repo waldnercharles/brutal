@@ -1,6 +1,8 @@
 /**
  * dyna.h - Tiny stretchy-buffer macros for C arrays.
  *
+ * Heavily inspired by: https://github.com/RandyGaul/ckit.h/blob/main/ckit.h
+ *
  * USAGE EXAMPLE:
  *   int *values = NULL;
  *   apush(values, 10);
