@@ -1,7 +1,6 @@
 #include "../include/brutal_ecs.h"
 
-#define TPOOL_IMPLEMENTATION
-#include "../include/tpool.h"
+#include "spmc_tpool.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -106,7 +105,7 @@ static tpool_t *tpool = NULL;
 static int bench_enqueue_cb(int (*fn)(void *args), void *fn_args, void *udata)
 {
     (void)udata;
-    return tpool_add_work(tpool, fn, fn_args);
+    return tpool_enqueue(tpool, fn, fn_args);
 }
 
 static void bench_wait_cb(void *udata)

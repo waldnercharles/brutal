@@ -30,8 +30,6 @@
 #undef tpool_wait
 #undef TPOOL_IMPLEMENTATION
 
-#define SPMC_TPOOL_STATIC
-#define SPMC_TPOOL_IMPLEMENTATION
 #include "spmc_tpool.h"
 
 #include <stdint.h>

@@ -1,8 +1,7 @@
 #include "brutal_ecs.h"
 #include "pico_unit.h"
 
-#define TPOOL_IMPLEMENTATION
-#include "tpool.h"
+#include "spmc_tpool.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -654,7 +653,7 @@ static tpool_t *g_tpool = NULL;
 static int tpool_enqueue_adapter(int (*fn)(void *), void *args, void *udata)
 {
     (void)udata;
-    return tpool_add_work(g_tpool, fn, args);
+    return tpool_enqueue(g_tpool, fn, args);
 }
 
 static void tpool_wait_adapter(void *udata)

@@ -3,33 +3,25 @@
 
 #include <stddef.h>
 
-#ifndef SPMC_TPOOL_DEF
-#ifdef SPMC_TPOOL_STATIC
-#define SPMC_TPOOL_DEF static
-#else
-#define SPMC_TPOOL_DEF
-#endif
-#endif
-
 typedef struct tpool tpool_t;
 typedef struct tpool_task_handle tpool_task_handle;
 typedef int (*tpool_task_fn)(void *arg);
 
-SPMC_TPOOL_DEF tpool_t *tpool_create(size_t num_threads);
-SPMC_TPOOL_DEF void tpool_destroy(tpool_t *tp);
+tpool_t *tpool_create(size_t num_threads);
+void tpool_destroy(tpool_t *tp);
 
-SPMC_TPOOL_DEF tpool_task_handle *tpool_handle_create(tpool_t *tp, int count);
-SPMC_TPOOL_DEF void tpool_handle_destroy(tpool_task_handle *h);
+tpool_task_handle *tpool_handle_create(tpool_t *tp, int count);
+void tpool_handle_destroy(tpool_task_handle *h);
 
-SPMC_TPOOL_DEF int tpool_reserve_tasks(tpool_t *tp, size_t extra);
-SPMC_TPOOL_DEF int tpool_enqueue_with_handle(tpool_t *tp, tpool_task_fn fn, void *arg, tpool_task_handle *h);
-SPMC_TPOOL_DEF tpool_task_handle *tpool_add_work(tpool_t *tp, tpool_task_fn fn, void *arg);
-SPMC_TPOOL_DEF int tpool_enqueue(tpool_t *tp, tpool_task_fn fn, void *arg);
+int tpool_reserve_tasks(tpool_t *tp, size_t extra);
+int tpool_enqueue_with_handle(tpool_t *tp, tpool_task_fn fn, void *arg, tpool_task_handle *h);
+tpool_task_handle *tpool_add_work(tpool_t *tp, tpool_task_fn fn, void *arg);
+int tpool_enqueue(tpool_t *tp, tpool_task_fn fn, void *arg);
 
-SPMC_TPOOL_DEF void tpool_kick(tpool_t *tp);
-SPMC_TPOOL_DEF void tpool_wait_task(tpool_t *tp, tpool_task_handle *h);
-SPMC_TPOOL_DEF void tpool_wait_all(tpool_t *tp);
-SPMC_TPOOL_DEF void tpool_wait(tpool_t *tp);
+void tpool_kick(tpool_t *tp);
+void tpool_wait_task(tpool_t *tp, tpool_task_handle *h);
+void tpool_wait_all(tpool_t *tp);
+void tpool_wait(tpool_t *tp);
 
 #ifdef SPMC_TPOOL_IMPLEMENTATION
 
@@ -254,7 +246,7 @@ static void *tpool_worker(void *p)
     return NULL;
 }
 
-SPMC_TPOOL_DEF tpool_t *tpool_create(size_t num_threads)
+tpool_t *tpool_create(size_t num_threads)
 {
     if (num_threads == 0) num_threads = 1;
 
@@ -298,7 +290,7 @@ SPMC_TPOOL_DEF tpool_t *tpool_create(size_t num_threads)
     return tp;
 }
 
-SPMC_TPOOL_DEF tpool_task_handle *tpool_handle_create(tpool_t *tp, int count)
+tpool_task_handle *tpool_handle_create(tpool_t *tp, int count)
 {
     TPOOL_ASSERT(tp);
     TPOOL_ASSERT(count >= 0);
@@ -314,14 +306,14 @@ SPMC_TPOOL_DEF tpool_task_handle *tpool_handle_create(tpool_t *tp, int count)
     return h;
 }
 
-SPMC_TPOOL_DEF void tpool_handle_destroy(tpool_task_handle *h)
+void tpool_handle_destroy(tpool_task_handle *h)
 {
     TPOOL_ASSERT(h);
     TPOOL_ASSERT(atomic_load_explicit(&h->remaining, memory_order_acquire) == 0);
     tpool_push_handle(h);
 }
 
-SPMC_TPOOL_DEF int tpool_reserve_tasks(tpool_t *tp, size_t extra)
+int tpool_reserve_tasks(tpool_t *tp, size_t extra)
 {
     TPOOL_ASSERT(tp);
     tpool_assert_idle(tp);
@@ -330,14 +322,14 @@ SPMC_TPOOL_DEF int tpool_reserve_tasks(tpool_t *tp, size_t extra)
              : -1;
 }
 
-SPMC_TPOOL_DEF int tpool_enqueue_with_handle(tpool_t *tp, tpool_task_fn fn, void *arg, tpool_task_handle *h)
+int tpool_enqueue_with_handle(tpool_t *tp, tpool_task_fn fn, void *arg, tpool_task_handle *h)
 {
     TPOOL_ASSERT(h);
     TPOOL_ASSERT(h->owner == tp);
     return tpool_enqueue_one(tp, fn, arg, h) ? 0 : -1;
 }
 
-SPMC_TPOOL_DEF tpool_task_handle *tpool_add_work(tpool_t *tp, tpool_task_fn fn, void *arg)
+tpool_task_handle *tpool_add_work(tpool_t *tp, tpool_task_fn fn, void *arg)
 {
     TPOOL_ASSERT(tp);
     TPOOL_ASSERT(fn);
@@ -352,12 +344,12 @@ SPMC_TPOOL_DEF tpool_task_handle *tpool_add_work(tpool_t *tp, tpool_task_fn fn, 
     return NULL;
 }
 
-SPMC_TPOOL_DEF int tpool_enqueue(tpool_t *tp, tpool_task_fn fn, void *arg)
+int tpool_enqueue(tpool_t *tp, tpool_task_fn fn, void *arg)
 {
     return tpool_enqueue_one(tp, fn, arg, NULL) ? 0 : -1;
 }
 
-SPMC_TPOOL_DEF void tpool_kick(tpool_t *tp)
+void tpool_kick(tpool_t *tp)
 {
     TPOOL_ASSERT(tp);
     if (tpool_is_running(tp)) return;
@@ -375,7 +367,7 @@ SPMC_TPOOL_DEF void tpool_kick(tpool_t *tp)
     pthread_mutex_unlock(&tp->mtx);
 }
 
-SPMC_TPOOL_DEF void tpool_wait_task(tpool_t *tp, tpool_task_handle *h)
+void tpool_wait_task(tpool_t *tp, tpool_task_handle *h)
 {
     TPOOL_ASSERT(tp);
     TPOOL_ASSERT(h);
@@ -389,7 +381,7 @@ SPMC_TPOOL_DEF void tpool_wait_task(tpool_t *tp, tpool_task_handle *h)
     pthread_mutex_unlock(&tp->mtx);
 }
 
-SPMC_TPOOL_DEF void tpool_wait_all(tpool_t *tp)
+void tpool_wait_all(tpool_t *tp)
 {
     TPOOL_ASSERT(tp);
     if (!tpool_is_running(tp)) tpool_kick(tp);
@@ -401,12 +393,12 @@ SPMC_TPOOL_DEF void tpool_wait_all(tpool_t *tp)
     pthread_mutex_unlock(&tp->mtx);
 }
 
-SPMC_TPOOL_DEF void tpool_wait(tpool_t *tp)
+void tpool_wait(tpool_t *tp)
 {
     tpool_wait_all(tp);
 }
 
-SPMC_TPOOL_DEF void tpool_destroy(tpool_t *tp)
+void tpool_destroy(tpool_t *tp)
 {
     TPOOL_ASSERT(tp);
 
@@ -434,7 +426,5 @@ SPMC_TPOOL_DEF void tpool_destroy(tpool_t *tp)
     free(tp->threads);
     free(tp);
 }
-
 #endif // SPMC_TPOOL_IMPLEMENTATION
-
 #endif // SPMC_TPOOL_H

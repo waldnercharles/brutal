@@ -159,6 +159,95 @@ TEST_CASE(test_dyna_push_compound_literal)
     return true;
 }
 
+TEST_CASE(test_dyna_afit_ensures_capacity)
+{
+    int *values = NULL;
+
+    // afit on existing array should ensure capacity
+    apush(values, 1);
+    afit(values, 100);
+    REQUIRE(values != NULL);
+    REQUIRE(acap(values) >= 100);
+    REQUIRE(alen(values) == 1);
+
+    // afit should not reduce capacity
+    int cap_before = acap(values);
+    afit(values, 10);
+    REQUIRE(acap(values) == cap_before);
+
+    afree(values);
+    return true;
+}
+
+TEST_CASE(test_dyna_acopy)
+{
+    int *src = NULL;
+    int *dst = NULL;
+
+    apush(src, 1);
+    apush(src, 2);
+    apush(src, 3);
+
+    acopy(dst, src);
+    REQUIRE(alen(dst) == 3);
+    REQUIRE(dst[0] == 1);
+    REQUIRE(dst[1] == 2);
+    REQUIRE(dst[2] == 3);
+
+    // Modifying dst should not affect src
+    dst[0] = 99;
+    REQUIRE(src[0] == 1);
+
+    // Copy NULL into existing array clears it
+    acopy(dst, NULL);
+    REQUIRE(alen(dst) == 0);
+
+    afree(src);
+    afree(dst);
+    return true;
+}
+
+TEST_CASE(test_dyna_arev)
+{
+    int *values = NULL;
+
+    // Reverse empty array (should handle gracefully)
+    arev(values);
+    REQUIRE(values == NULL);
+
+    // Reverse single element
+    apush(values, 42);
+    arev(values);
+    REQUIRE(alen(values) == 1);
+    REQUIRE(values[0] == 42);
+
+    // Reverse odd count
+    apush(values, 10);
+    apush(values, 20);
+    arev(values);
+    REQUIRE(alen(values) == 3);
+    REQUIRE(values[0] == 20);
+    REQUIRE(values[1] == 10);
+    REQUIRE(values[2] == 42);
+
+    afree(values);
+
+    // Reverse even count
+    int *even = NULL;
+    apush(even, 1);
+    apush(even, 2);
+    apush(even, 3);
+    apush(even, 4);
+    arev(even);
+    REQUIRE(even[0] == 4);
+    REQUIRE(even[1] == 3);
+    REQUIRE(even[2] == 2);
+    REQUIRE(even[3] == 1);
+
+    afree(even);
+    return true;
+}
+
 TEST_SUITE(dyna_suite)
 {
     RUN_TEST_CASE(test_dyna_push_pop_and_last);
@@ -169,4 +258,7 @@ TEST_SUITE(dyna_suite)
     RUN_TEST_CASE(test_dyna_setcap_does_not_shrink);
     RUN_TEST_CASE(test_dyna_afree_resets_and_allows_reuse);
     RUN_TEST_CASE(test_dyna_push_compound_literal);
+    RUN_TEST_CASE(test_dyna_afit_ensures_capacity);
+    RUN_TEST_CASE(test_dyna_acopy);
+    RUN_TEST_CASE(test_dyna_arev);
 }
