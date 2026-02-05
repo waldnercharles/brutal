@@ -1,4 +1,5 @@
 #include "pico_unit.h"
+
 #define SPMC_TPOOL_STATIC
 #define SPMC_TPOOL_IMPLEMENTATION
 #include "spmc_tpool_box2d.h"
@@ -39,7 +40,10 @@ TEST_CASE(test_spmc_handles_wait_for_each_task)
     REQUIRE(tp != NULL);
 
     atomic_int counter = 0;
-    enum { TASKS = 32 };
+    enum
+    {
+        TASKS = 32
+    };
     tpool_task_handle *handles[TASKS];
     spmc_task_arg args[TASKS];
 
@@ -66,7 +70,10 @@ TEST_CASE(test_spmc_enqueue_wait_all_without_handles)
     REQUIRE(tp != NULL);
 
     atomic_int counter = 0;
-    enum { TASKS = 64 };
+    enum
+    {
+        TASKS = 64
+    };
     spmc_task_arg args[TASKS];
 
     for (int i = 0; i < TASKS; i++) {
@@ -87,7 +94,10 @@ TEST_CASE(test_spmc_destroy_drains_inflight_work)
     REQUIRE(tp != NULL);
 
     atomic_int counter = 0;
-    enum { TASKS = 8 };
+    enum
+    {
+        TASKS = 8
+    };
     spmc_task_arg args[TASKS];
 
     for (int i = 0; i < TASKS; i++) {
@@ -109,7 +119,10 @@ TEST_CASE(test_spmc_b2_enqueue_parallel_for_uses_single_handle)
     tpool_b2_bridge bridge;
     tpool_b2_bridge_init(&bridge, tp);
 
-    enum { ITEMS = 257 };
+    enum
+    {
+        ITEMS = 257
+    };
     atomic_int slots[ITEMS];
     for (int i = 0; i < ITEMS; i++) atomic_init(&slots[i], 0);
 
