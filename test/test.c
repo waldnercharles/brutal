@@ -7,6 +7,7 @@
 
 extern void brutal_ecs_suite(void);
 extern void spmc_tpool_suite(void);
+extern void dyna_suite(void);
 
 int main(void)
 {
@@ -14,6 +15,7 @@ int main(void)
 
     RUN_TEST_SUITE(brutal_ecs_suite);
     RUN_TEST_SUITE(spmc_tpool_suite);
+    RUN_TEST_SUITE(dyna_suite);
 
     pu_print_stats();
     return pu_test_failed();
