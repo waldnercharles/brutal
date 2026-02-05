@@ -672,9 +672,6 @@ static int mt_move_system(ecs_t *ecs, ecs_view *view, void *udata)
     ecs_comp_t pos_comp = 0;
     ecs_comp_t vel_comp = 1;
 
-    pthread_t tid = pthread_self();
-    printf("[Thread %p] Processing %d entities (task_index from TLS)\n", (void *)tid, view->count);
-
     for (int i = 0; i < view->count; i++) {
         ecs_entity e = view->entities[i];
         Position *pos = (Position *)ecs_get(ecs, e, pos_comp);
@@ -711,10 +708,6 @@ TEST_CASE(test_multithreading_basic)
     ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
     ecs_comp_t vel_comp = ECS_COMPONENT(ecs, Velocity);
 
-    printf("\n--- Multithreading Test ---\n");
-    printf("Thread pool: %d threads\n", NUM_THREADS);
-    printf("Creating %d entities...\n", NUM_ENTITIES);
-
     // Create entities
     for (int i = 0; i < NUM_ENTITIES; i++) {
         ecs_entity e = ecs_create(ecs);
@@ -737,23 +730,16 @@ TEST_CASE(test_multithreading_basic)
     atomic_store(&mt_system_calls, 0);
     atomic_store(&mt_entity_count, 0);
 
-    printf("Running system with multithreading...\n");
-
     // Run ECS - should use multiple threads
     ecs_progress(ecs, 0);
 
     int calls = atomic_load(&mt_system_calls);
     int entities = atomic_load(&mt_entity_count);
 
-    printf("System was called %d times (expected: %d for %d threads)\n", calls, NUM_THREADS, NUM_THREADS);
-    printf("Total entities processed: %d (expected: %d)\n", entities, NUM_ENTITIES);
-
     // The system should be called NUM_THREADS times (once per task)
     REQUIRE(calls == NUM_THREADS);
     // All entities should be processed
     REQUIRE(entities == NUM_ENTITIES);
-
-    printf("--- Multithreading Test PASSED ---\n\n");
 
     // Cleanup
     ecs_free(ecs);
@@ -777,9 +763,6 @@ TEST_CASE(test_multithreading_verify_parallel_execution)
     ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
     ecs_comp_t vel_comp = ECS_COMPONENT(ecs, Velocity);
 
-    printf("\n--- Parallel Execution Verification ---\n");
-    printf("Creating %d entities with %d threads...\n", NUM_ENTITIES, NUM_THREADS);
-
     for (int i = 0; i < NUM_ENTITIES; i++) {
         ecs_entity e = ecs_create(ecs);
         Position *pos = (Position *)ecs_add(ecs, e, pos_comp);
@@ -799,7 +782,6 @@ TEST_CASE(test_multithreading_verify_parallel_execution)
     atomic_store(&mt_system_calls, 0);
     atomic_store(&mt_entity_count, 0);
 
-    printf("Progress iteration 1:\n");
     ecs_progress(ecs, 0);
 
     int first_entities = atomic_load(&mt_entity_count);
@@ -808,14 +790,10 @@ TEST_CASE(test_multithreading_verify_parallel_execution)
     atomic_store(&mt_system_calls, 0);
     atomic_store(&mt_entity_count, 0);
 
-    printf("Progress iteration 2:\n");
     ecs_progress(ecs, 0);
 
     int second_entities = atomic_load(&mt_entity_count);
     REQUIRE(second_entities == NUM_ENTITIES);
-
-    printf("Both iterations processed all %d entities correctly.\n", NUM_ENTITIES);
-    printf("--- Parallel Execution Verification PASSED ---\n\n");
 
     ecs_free(ecs);
     tpool_destroy(g_tpool);
