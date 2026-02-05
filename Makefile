@@ -17,5 +17,5 @@ test: configure build
 benchmark: configure build
 	@./bin/Release/benchmark
 
-run: test benchmark
+run: test
 

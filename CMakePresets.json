@@ -9,7 +9,6 @@
             "cacheVariables": {
                 "CMAKE_C_COMPILER": "gcc",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-                "CMAKE_C_COMPILER_LAUNCHER": "ccache",
                 "CMAKE_CROSS_CONFIGS": "all"
             }
         }
