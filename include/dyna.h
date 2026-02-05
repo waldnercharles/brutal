@@ -24,15 +24,6 @@
 #define DYNA_REALLOC(ptr, sz) realloc(ptr, sz)
 #define DYNA_FREE(ptr) free(ptr)
 
-#ifdef NDEBUG
-#define DYNA_ASSERT(expr) ((void)0)
-#else
-#ifndef DYNA_ASSERT
-#include <assert.h>
-#define DYNA_ASSERT(expr) (assert(expr))
-#endif
-#endif
-
 // clang-format off
 typedef struct
 {
