@@ -1,6 +1,5 @@
-#include "pico_unit.h"
-
 #include "mpmc_tpool.h"
+#include "pico_unit.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -8,9 +7,10 @@
 
 // ---- helpers ----------------------------------------------------------------
 
-static void mpmc_add_one(void *arg)
+static int mpmc_add_one(void *arg)
 {
     atomic_fetch_add((atomic_int *)arg, 1);
+    return 0;
 }
 
 typedef struct
@@ -19,10 +19,11 @@ typedef struct
     int value;
 } mpmc_task_arg;
 
-static void mpmc_add_value(void *arg)
+static int mpmc_add_value(void *arg)
 {
     mpmc_task_arg *a = (mpmc_task_arg *)arg;
     atomic_fetch_add(a->counter, a->value);
+    return 0;
 }
 
 typedef struct
@@ -80,15 +81,16 @@ static void *mpmc_submitter_thread(void *arg)
 {
     mpmc_submitter_arg *a = (mpmc_submitter_arg *)arg;
     for (int i = 0; i < a->count; i++) {
-        while (!tpool_submit(a->pool, mpmc_add_one, a->counter)) tpool_relax();
+        tpool_submit(a->pool, mpmc_add_one, a->counter);
     }
     return NULL;
 }
 
-static void mpmc_sleep_and_add(void *arg)
+static int mpmc_sleep_and_add(void *arg)
 {
     usleep(5000);
     atomic_fetch_add((atomic_int *)arg, 1);
+    return 0;
 }
 
 // ---- queue tests ------------------------------------------------------------
@@ -145,7 +147,10 @@ TEST_CASE(test_mpmc_queue_fifo_order)
 
 TEST_CASE(test_mpmc_queue_full_returns_false)
 {
-    enum { CAP = 16 };
+    enum
+    {
+        CAP = 16
+    };
     tpool_queue_t q;
     queue_init(&q, CAP);
 
@@ -160,7 +165,10 @@ TEST_CASE(test_mpmc_queue_full_returns_false)
 
 TEST_CASE(test_mpmc_queue_reuse_after_drain)
 {
-    enum { CAP = 16 };
+    enum
+    {
+        CAP = 16
+    };
     tpool_queue_t q;
     queue_init(&q, CAP);
 
@@ -186,9 +194,12 @@ TEST_CASE(test_mpmc_pool_basic_submit_and_wait)
     tpool_t *tp = tpool_init(4, 0);
 
     atomic_int counter = 0;
-    enum { TASKS = 64 };
+    enum
+    {
+        TASKS = 64
+    };
 
-    for (int i = 0; i < TASKS; i++) REQUIRE(tpool_submit(tp, mpmc_add_one, &counter));
+    for (int i = 0; i < TASKS; i++) tpool_submit(tp, mpmc_add_one, &counter);
 
     tpool_wait(tp);
     REQUIRE(atomic_load(&counter) == TASKS);
@@ -197,11 +208,11 @@ TEST_CASE(test_mpmc_pool_basic_submit_and_wait)
     return true;
 }
 
-TEST_CASE(test_mpmc_pool_submit_null_fn_rejected)
+TEST_CASE(test_mpmc_pool_submit_null_fn)
 {
     tpool_t *tp = tpool_init(2, 0);
 
-    REQUIRE(!tpool_submit(tp, NULL, NULL));
+    tpool_submit(tp, NULL, NULL);
 
     tpool_destroy(tp);
     return true;
@@ -212,9 +223,12 @@ TEST_CASE(test_mpmc_pool_single_thread)
     tpool_t *tp = tpool_init(1, 0);
 
     atomic_int counter = 0;
-    enum { TASKS = 128 };
+    enum
+    {
+        TASKS = 128
+    };
 
-    for (int i = 0; i < TASKS; i++) REQUIRE(tpool_submit(tp, mpmc_add_one, &counter));
+    for (int i = 0; i < TASKS; i++) tpool_submit(tp, mpmc_add_one, &counter);
 
     tpool_wait(tp);
     REQUIRE(atomic_load(&counter) == TASKS);
@@ -228,9 +242,12 @@ TEST_CASE(test_mpmc_pool_destroy_drains_work)
     tpool_t *tp = tpool_init(2, 0);
 
     atomic_int counter = 0;
-    enum { TASKS = 32 };
+    enum
+    {
+        TASKS = 32
+    };
 
-    for (int i = 0; i < TASKS; i++) REQUIRE(tpool_submit(tp, mpmc_add_one, &counter));
+    for (int i = 0; i < TASKS; i++) tpool_submit(tp, mpmc_add_one, &counter);
 
     tpool_destroy(tp);
     REQUIRE(atomic_load(&counter) == TASKS);
@@ -242,10 +259,14 @@ TEST_CASE(test_mpmc_pool_multiple_wait_cycles)
 {
     tpool_t *tp = tpool_init(4, 0);
     atomic_int counter = 0;
-    enum { TASKS = 32 };
+    enum
+    {
+        TASKS = 32
+    };
 
     for (int round = 0; round < 3; round++) {
-        for (int i = 0; i < TASKS; i++) REQUIRE(tpool_submit(tp, mpmc_add_one, &counter));
+        for (int i = 0; i < TASKS; i++)
+            tpool_submit(tp, mpmc_add_one, &counter);
         tpool_wait(tp);
     }
 
@@ -270,12 +291,15 @@ TEST_CASE(test_mpmc_pool_values_carried_through_arg)
     tpool_t *tp = tpool_init(4, 0);
     atomic_int counter = 0;
 
-    enum { TASKS = 16 };
+    enum
+    {
+        TASKS = 16
+    };
     mpmc_task_arg args[TASKS];
 
     for (int i = 0; i < TASKS; i++) {
         args[i] = (mpmc_task_arg){ .counter = &counter, .value = i + 1 };
-        REQUIRE(tpool_submit(tp, mpmc_add_value, &args[i]));
+        tpool_submit(tp, mpmc_add_value, &args[i]);
     }
 
     tpool_wait(tp);
@@ -292,9 +316,12 @@ TEST_CASE(test_mpmc_pool_high_contention)
     tpool_t *tp = tpool_init(8, 0);
     atomic_int counter = 0;
 
-    enum { TASKS = 4096 };
+    enum
+    {
+        TASKS = 4096
+    };
 
-    for (int i = 0; i < TASKS; i++) REQUIRE(tpool_submit(tp, mpmc_add_one, &counter));
+    for (int i = 0; i < TASKS; i++) tpool_submit(tp, mpmc_add_one, &counter);
 
     tpool_wait(tp);
     REQUIRE(atomic_load(&counter) == TASKS);
@@ -308,7 +335,12 @@ TEST_CASE(test_mpmc_queue_concurrent_producers_consumers)
     tpool_queue_t q;
     queue_init(&q, 0);
 
-    enum { PRODUCERS = 4, CONSUMERS = 4, ITEMS_PER = 2048 };
+    enum
+    {
+        PRODUCERS = 4,
+        CONSUMERS = 4,
+        ITEMS_PER = 2048
+    };
     atomic_int produced = 0;
     atomic_int consumed = 0;
     atomic_bool done = false;
@@ -340,7 +372,11 @@ TEST_CASE(test_mpmc_queue_concurrent_producers_consumers)
 
 TEST_CASE(test_mpmc_queue_multiple_wrap_around_laps)
 {
-    enum { CAP = 16, LAPS = 8 };
+    enum
+    {
+        CAP = 16,
+        LAPS = 8
+    };
     tpool_queue_t q;
     queue_init(&q, CAP);
 
@@ -365,7 +401,11 @@ TEST_CASE(test_mpmc_pool_concurrent_submitters)
     tpool_t *tp = tpool_init(4, 0);
     atomic_int counter = 0;
 
-    enum { SUBMITTERS = 4, JOBS_PER = 512 };
+    enum
+    {
+        SUBMITTERS = 4,
+        JOBS_PER = 512
+    };
     pthread_t threads[SUBMITTERS];
     mpmc_submitter_arg sargs[SUBMITTERS];
 
@@ -389,7 +429,7 @@ TEST_CASE(test_mpmc_pool_init_zero_threads_clamped)
     REQUIRE(tp->nthreads == 1);
 
     atomic_int counter = 0;
-    REQUIRE(tpool_submit(tp, mpmc_add_one, &counter));
+    tpool_submit(tp, mpmc_add_one, &counter);
     tpool_wait(tp);
     REQUIRE(atomic_load(&counter) == 1);
 
@@ -407,11 +447,15 @@ TEST_CASE(test_mpmc_pool_inline_execution_on_full_queue)
 {
     // Tiny queue: 4 slots, 2 workers. Submit 32 jobs.
     // Many will overflow and run inline on the calling thread.
-    enum { CAP = 4, TASKS = 32 };
+    enum
+    {
+        CAP = 4,
+        TASKS = 32
+    };
     tpool_t *tp = tpool_init(2, CAP);
     atomic_int counter = 0;
 
-    for (int i = 0; i < TASKS; i++) REQUIRE(tpool_submit(tp, mpmc_add_one, &counter));
+    for (int i = 0; i < TASKS; i++) tpool_submit(tp, mpmc_add_one, &counter);
 
     tpool_wait(tp);
     REQUIRE(atomic_load(&counter) == TASKS);
@@ -424,16 +468,22 @@ TEST_CASE(test_mpmc_pool_wait_steals_work)
 {
     // 1 worker with a slow job blocking it. Submit fast jobs after.
     // tpool_wait must steal and run them to make progress.
-    enum { CAP = 8 };
+    enum
+    {
+        CAP = 8
+    };
     tpool_t *tp = tpool_init(1, CAP);
     atomic_int counter = 0;
 
     // Block the single worker with a slow job.
-    REQUIRE(tpool_submit(tp, mpmc_sleep_and_add, &counter));
+    tpool_submit(tp, mpmc_sleep_and_add, &counter);
 
     // Submit fast jobs that the worker can't pick up while sleeping.
-    enum { FAST = 4 };
-    for (int i = 0; i < FAST; i++) REQUIRE(tpool_submit(tp, mpmc_add_one, &counter));
+    enum
+    {
+        FAST = 4
+    };
+    for (int i = 0; i < FAST; i++) tpool_submit(tp, mpmc_add_one, &counter);
 
     tpool_wait(tp);
     REQUIRE(atomic_load(&counter) == 1 + FAST);
@@ -450,7 +500,7 @@ TEST_SUITE(mpmc_tpool_suite)
     RUN_TEST_CASE(test_mpmc_queue_full_returns_false);
     RUN_TEST_CASE(test_mpmc_queue_reuse_after_drain);
     RUN_TEST_CASE(test_mpmc_pool_basic_submit_and_wait);
-    RUN_TEST_CASE(test_mpmc_pool_submit_null_fn_rejected);
+    RUN_TEST_CASE(test_mpmc_pool_submit_null_fn);
     RUN_TEST_CASE(test_mpmc_pool_single_thread);
     RUN_TEST_CASE(test_mpmc_pool_destroy_drains_work);
     RUN_TEST_CASE(test_mpmc_pool_multiple_wait_cycles);

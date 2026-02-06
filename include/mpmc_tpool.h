@@ -27,7 +27,7 @@
 
 typedef struct
 {
-    void (*fn)(void *);
+    int (*fn)(void *);
     void *arg;
 } tpool_job_t;
 
@@ -35,19 +35,19 @@ typedef struct
 
 typedef struct
 {
-    alignas(CACHE_LINE) _Atomic size_t turn;
+    alignas(CACHE_LINE) _Atomic int turn;
     uint8_t data[JOB_SIZE];
 } tpool_slot_t;
 
 typedef struct
 {
-    alignas(CACHE_LINE) _Atomic size_t head;
-    alignas(CACHE_LINE) _Atomic size_t tail;
-    size_t capacity;
+    alignas(CACHE_LINE) _Atomic int head;
+    alignas(CACHE_LINE) _Atomic int tail;
+    int capacity;
     tpool_slot_t *slots;
 } tpool_queue_t;
 
-static inline void queue_init(tpool_queue_t *q, size_t capacity)
+static inline void queue_init(tpool_queue_t *q, int capacity)
 {
     if (capacity == 0) capacity = TPOOL_DEFAULT_QUEUE_SIZE;
     q->capacity = capacity;
@@ -55,16 +55,16 @@ static inline void queue_init(tpool_queue_t *q, size_t capacity)
     assert(q->slots);
     atomic_store_explicit(&q->head, 0, memory_order_relaxed);
     atomic_store_explicit(&q->tail, 0, memory_order_relaxed);
-    for (size_t i = 0; i < capacity; i++)
+    for (int i = 0; i < capacity; i++)
         atomic_store_explicit(&q->slots[i].turn, 0, memory_order_relaxed);
 }
 
 static inline bool try_enqueue(tpool_queue_t *q, const void *item)
 {
-    size_t head = atomic_load_explicit(&q->head, memory_order_acquire);
+    int head = atomic_load_explicit(&q->head, memory_order_acquire);
     for (;;) {
         tpool_slot_t *s = &q->slots[head % q->capacity];
-        size_t want = (head / q->capacity) * 2;
+        int want = (head / q->capacity) * 2;
         if (want == atomic_load_explicit(&s->turn, memory_order_acquire)) {
             if (atomic_compare_exchange_strong_explicit(&q->head, &head, head + 1, memory_order_acq_rel, memory_order_acquire)) {
                 memcpy(s->data, item, JOB_SIZE);
@@ -74,7 +74,7 @@ static inline bool try_enqueue(tpool_queue_t *q, const void *item)
                 tpool_relax();
             }
         } else {
-            size_t prev = head;
+            int prev = head;
             head = atomic_load_explicit(&q->head, memory_order_acquire);
             if (head == prev) return false; // appears full
             tpool_relax();
@@ -84,10 +84,10 @@ static inline bool try_enqueue(tpool_queue_t *q, const void *item)
 
 static inline bool try_dequeue(tpool_queue_t *q, void *item)
 {
-    size_t tail = atomic_load_explicit(&q->tail, memory_order_acquire);
+    int tail = atomic_load_explicit(&q->tail, memory_order_acquire);
     for (;;) {
         tpool_slot_t *s = &q->slots[tail % q->capacity];
-        size_t want = (tail / q->capacity) * 2 + 1;
+        int want = (tail / q->capacity) * 2 + 1;
 
         if (want == atomic_load_explicit(&s->turn, memory_order_acquire)) {
             if (atomic_compare_exchange_strong_explicit(&q->tail, &tail, tail + 1, memory_order_acq_rel, memory_order_acquire)) {
@@ -98,7 +98,7 @@ static inline bool try_dequeue(tpool_queue_t *q, void *item)
                 tpool_relax();
             }
         } else {
-            size_t prev = tail;
+            int prev = tail;
             tail = atomic_load_explicit(&q->tail, memory_order_acquire);
             if (tail == prev) return false; // appears empty
             tpool_relax();
@@ -165,7 +165,7 @@ static void *tpool_worker(void *arg)
     }
 }
 
-static inline tpool_t *tpool_init(int nthreads, size_t queue_capacity)
+static inline tpool_t *tpool_init(int nthreads, int queue_capacity)
 {
     if (nthreads <= 0) nthreads = 1;
 
@@ -203,13 +203,13 @@ static inline tpool_t *tpool_init(int nthreads, size_t queue_capacity)
     return p;
 }
 
-// Submit one job. Returns false if queue is full or pool is stopping.
-static inline bool tpool_submit(tpool_t *p, void (*fn)(void *), void *arg)
+// Submit one job. Runs synchronously when full.
+static inline void tpool_submit(tpool_t *p, int (*fn)(void *), void *arg)
 {
     assert(p);
 
-    if (!fn) return false;
-    if (atomic_load_explicit(&p->stop, memory_order_acquire)) return false;
+    if (!fn) return;
+    if (atomic_load_explicit(&p->stop, memory_order_acquire)) return;
 
     // Reserve completion slot first. Prevents tpool_wait from observing 0 spuriously
     atomic_fetch_add_explicit(&p->in_flight, 1, memory_order_acq_rel);
@@ -225,13 +225,11 @@ static inline bool tpool_submit(tpool_t *p, void (*fn)(void *), void *arg)
             pthread_cond_signal(&p->cv_work);
             pthread_mutex_unlock(&p->mtx);
         }
-        return true;
+    } else {
+        // Queue is full: Just run it immediately.
+        fn(arg);
+        tpool_job_done(p);
     }
-
-    // Queue is full: Just run it immediately.
-    fn(arg);
-    tpool_job_done(p);
-    return true;
 }
 
 // Wait until all submitted jobs complete.

@@ -1,7 +1,8 @@
 #include "../include/brutal_ecs.h"
+#include "mpmc_tpool.h"
 
-#include "spmc_tpool.h"
-
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -22,6 +23,10 @@ static double bench_wall_start_ms = 0.0;
 static double bench_cpu_start_ms = 0.0;
 static ecs_t *ecs = NULL;
 
+static _Atomic uint64_t bench_last_progress_ms = 0;
+static uint64_t bench_watchdog_ms = 60000;
+static int bench_watchdog_running = 0;
+
 static void setup();
 static void teardown();
 
@@ -37,10 +42,40 @@ static double now_cpu_ms()
     return 1000.0 * (double)clock() / CLOCKS_PER_SEC;
 }
 
+static void bench_progress(const char *label)
+{
+    (void)label;
+    atomic_store(&bench_last_progress_ms, (uint64_t)now_wall_ms());
+}
+
+static void *bench_watchdog_thread(void *arg)
+{
+    (void)arg;
+    while (bench_watchdog_running) {
+        uint64_t last = atomic_load(&bench_last_progress_ms);
+        uint64_t now = (uint64_t)now_wall_ms();
+        if (bench_watchdog_ms > 0 && last > 0 && now - last > bench_watchdog_ms) {
+            fprintf(
+                stderr,
+                "Benchmark watchdog timeout after %llu ms without progress\n",
+                (unsigned long long)bench_watchdog_ms
+            );
+            abort();
+        }
+
+        struct timespec ts;
+        ts.tv_sec = 0;
+        ts.tv_nsec = 100 * 1000 * 1000;
+        nanosleep(&ts, NULL);
+    }
+    return NULL;
+}
+
 static void bench_begin(const char *name)
 {
     printf("---------------------------------------------------------------\n");
     printf("Running: %s\n", name);
+    bench_progress(name);
     bench_wall_start_ms = now_wall_ms();
     bench_cpu_start_ms = now_cpu_ms();
 }
@@ -105,7 +140,8 @@ static tpool_t *tpool = NULL;
 static int bench_enqueue_cb(int (*fn)(void *args), void *fn_args, void *udata)
 {
     (void)udata;
-    return tpool_enqueue(tpool, fn, fn_args);
+    tpool_submit(tpool, fn, fn_args);
+    return 0;
 }
 
 static void bench_wait_cb(void *udata)
@@ -146,7 +182,7 @@ static void setup()
 {
     ecs = ecs_new();
     if (use_tpool && num_threads > 1) {
-        tpool = tpool_create((size_t)num_threads);
+        tpool = tpool_init(num_threads, 0);
         ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, num_threads);
     }
 
@@ -158,7 +194,7 @@ static void setup_destroy_with_two_components()
 {
     ecs = ecs_new();
     if (use_tpool && num_threads > 1) {
-        tpool = tpool_create((size_t)num_threads);
+        tpool = tpool_init(num_threads, 0);
         ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, num_threads);
     }
 
@@ -176,7 +212,7 @@ static void setup_three_systems_min()
 {
     ecs = ecs_new();
     if (use_tpool && num_threads > 1) {
-        tpool = tpool_create((size_t)num_threads);
+        tpool = tpool_init(num_threads, 0);
         ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, num_threads);
     }
 
@@ -194,13 +230,15 @@ static void setup_three_systems_min()
 
     BoundsSystem = ecs_sys_create(ecs, bounds_system, NULL);
     ecs_sys_require(ecs, BoundsSystem, RectComponent);
+
+    populate_three_systems_entities();
 }
 
 static void setup_three_systems_max()
 {
     ecs = ecs_new();
     if (use_tpool && num_threads > 1) {
-        tpool = tpool_create((size_t)num_threads);
+        tpool = tpool_init(num_threads, 0);
         ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, num_threads);
     }
 
@@ -218,6 +256,8 @@ static void setup_three_systems_max()
 
     BoundsSystem = ecs_sys_create(ecs, bounds_system, NULL);
     ecs_sys_require(ecs, BoundsSystem, RectComponent);
+
+    populate_three_systems_entities();
 }
 
 static void teardown()
@@ -235,7 +275,7 @@ static void setup_get()
 {
     ecs = ecs_new();
     if (use_tpool && num_threads > 1) {
-        tpool = tpool_create((size_t)num_threads);
+        tpool = tpool_init(num_threads, 0);
         ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, num_threads);
     }
 
@@ -394,9 +434,6 @@ static void bench_queue_destroy()
 
 static void bench_three_systems(bool use_progress)
 {
-    populate_three_systems_entities();
-
-    // Run on pre-populated entities. Setup cost is intentionally excluded.
     if (use_progress) {
         ecs_progress(ecs, 0);
     } else {
@@ -427,6 +464,7 @@ static void run_benchmarks(const char *label)
     printf("Brutal ECS Benchmarks (%s)\n", label);
     printf("===============================================================\n");
     printf("Number of entities: %u\n", MAX_ENTITIES);
+    bench_progress(label);
 
     BENCH_RUN(bench_create, setup, teardown);
     BENCH_RUN(bench_create_destroy, setup, teardown);
@@ -506,6 +544,7 @@ static bench_result_t run_threading_test(
     bench_result_t result = { 0 };
     result.entity_count = entity_count;
     result.thread_count = thread_count;
+    bench_progress(work_type);
     double setup_start_ms = now_wall_ms();
 
     // Setup
@@ -513,7 +552,7 @@ static bench_result_t run_threading_test(
     tpool_t *test_pool = NULL;
 
     if (thread_count > 1) {
-        test_pool = tpool_create((size_t)thread_count);
+        test_pool = tpool_init(thread_count, 0);
         ecs_set_task_callbacks(test_ecs, bench_enqueue_cb, bench_wait_cb, NULL, thread_count);
         tpool = test_pool; // Set global for callbacks
     }
@@ -607,6 +646,8 @@ static void run_threading_analysis(void)
     for (int e = 0; e < num_entity_tests; e++) {
         double baseline_wall_ms = 0.0;
         for (int t = 0; t < num_thread_tests; t++) {
+            printf("Threading test (LIGHT) entities=%d threads=%d\n", entity_counts[e], thread_counts[t]);
+            bench_progress("threading_light");
             light_results[e][t] = run_threading_test(
                 entity_counts[e],
                 thread_counts[t],
@@ -625,6 +666,8 @@ static void run_threading_analysis(void)
     for (int e = 0; e < num_entity_tests; e++) {
         double baseline_wall_ms = 0.0;
         for (int t = 0; t < num_thread_tests; t++) {
+            printf("Threading test (HEAVY) entities=%d threads=%d\n", entity_counts[e], thread_counts[t]);
+            bench_progress("threading_heavy");
             heavy_results[e][t] = run_threading_test(
                 entity_counts[e],
                 thread_counts[t],
@@ -674,6 +717,21 @@ static void run_threading_analysis(void)
 
 int main(void)
 {
+    const char *watchdog_env = getenv("BRUTAL_BENCH_WATCHDOG_MS");
+    if (watchdog_env && watchdog_env[0] != '\0') {
+        long long v = atoll(watchdog_env);
+        bench_watchdog_ms = v > 0 ? (uint64_t)v : 0;
+    }
+
+    if (bench_watchdog_ms > 0) {
+        pthread_t tid;
+        bench_watchdog_running = 1;
+        bench_progress("start");
+        if (pthread_create(&tid, NULL, bench_watchdog_thread, NULL) == 0) {
+            pthread_detach(tid);
+        }
+    }
+
     // Run threading analysis first
     run_threading_analysis();
 
@@ -687,5 +745,6 @@ int main(void)
     use_tpool = 1;
     run_benchmarks("multi-threaded, 8 threads");
 
+    bench_watchdog_running = 0;
     return 0;
 }

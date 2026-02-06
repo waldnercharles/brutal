@@ -1,7 +1,6 @@
 #include "brutal_ecs.h"
+#include "mpmc_tpool.h"
 #include "pico_unit.h"
-
-#include "spmc_tpool.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -653,7 +652,8 @@ static tpool_t *g_tpool = NULL;
 static int tpool_enqueue_adapter(int (*fn)(void *), void *args, void *udata)
 {
     (void)udata;
-    return tpool_enqueue(g_tpool, fn, args);
+    tpool_submit(g_tpool, fn, args);
+    return 0;
 }
 
 static void tpool_wait_adapter(void *udata)
@@ -693,7 +693,7 @@ TEST_CASE(test_multithreading_basic)
     const int NUM_ENTITIES = 1000;
 
     // Create thread pool
-    g_tpool = tpool_create(NUM_THREADS);
+    g_tpool = tpool_init(NUM_THREADS, 0);
     REQUIRE(g_tpool != NULL);
 
     // Create ECS
@@ -753,7 +753,7 @@ TEST_CASE(test_multithreading_verify_parallel_execution)
     const int NUM_THREADS = 4;
     const int NUM_ENTITIES = 10000;
 
-    g_tpool = tpool_create(NUM_THREADS);
+    g_tpool = tpool_init(NUM_THREADS, 0);
     REQUIRE(g_tpool != NULL);
 
     ecs_t *ecs = ecs_new();

@@ -52,21 +52,3 @@ target_compile_options(
         -Wno-strict-prototypes
 )
 target_include_directories(benchmark PUBLIC "${CMAKE_SOURCE_DIR}/include")
-
-add_executable(
-    benchmark_tpool_compare
-    "${CMAKE_CURRENT_SOURCE_DIR}/bench_tpool_compare.c"
-    ${PROJECT_SOURCES}
-)
-target_compile_options(
-    benchmark_tpool_compare
-    PRIVATE
-        -O2
-        -Wall
-        -Wextra
-        -Wpedantic
-        -Werror
-        -Wno-unused-function
-        -Wno-strict-prototypes
-)
-target_include_directories(benchmark_tpool_compare PUBLIC "${CMAKE_SOURCE_DIR}/include")
