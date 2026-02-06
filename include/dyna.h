@@ -65,6 +65,9 @@ typedef struct
 // Ensure capacity for n elements. May reallocate.
 #define afit(a, n)    ((!(a) || (n) > DYNA_HDR(a)->cap) ? (dyna_grow(a, (n) - alen(a), 0), 0) : 0)
 
+// Ensure capacity for len + n elements. May reallocate.
+#define agrow(a, n)   ((!(a) || DYNA_HDR(a)->len + (n) > DYNA_HDR(a)->cap) ? (dyna_grow(a, n, 0), 0) : 0)
+
 // Append element. May reallocate.
 #define apush(a, ...) (DYNA_CANARY(a), afit(a, alen(a) + 1), (a)[DYNA_HDR(a)->len++] = (__VA_ARGS__))
 

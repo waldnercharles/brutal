@@ -92,6 +92,10 @@
 #define ECS_CMD_BUFFER_CAPACITY 1024
 #endif
 
+#ifndef ECS_CACHE_LINE_SIZE
+#define ECS_CACHE_LINE_SIZE 64
+#endif
+
 /* --------------------------------- Bitset --------------------------------- */
 
 #define ECS_BS_WORD_BITS 64
@@ -385,7 +389,7 @@ typedef struct
 
 typedef struct
 {
-    ecs_cmd *commands;
+    _Alignas(ECS_CACHE_LINE_SIZE) ecs_cmd *commands;
     int count;
     int capacity;
 
