@@ -1,22 +1,121 @@
+/**
+ * mpmc_tpool.h - Lock-free MPMC thread pool
+ *
+ * Multi-producer multi-consumer thread pool with lock-free queue.
+ * Workers steal work when waiting. Inline execution on full queue.
+ *
+ * USAGE EXAMPLE:
+ *   static int add_task(void *arg) {
+ *       int *counter = (int *)arg;
+ *       (*counter)++; // Not thread-safe but, you get the idea...
+ *       return 0;
+ *   }
+ *
+ *   int main() {
+ *       tpool_t *pool = tpool_init(4, 1024);
+ *       int counter = 0;
+ *
+ *       for (int i = 0; i < 100; i++) {
+ *           tpool_submit(pool, add_task, &counter);
+ *       }
+ *
+ *       tpool_wait(pool);
+ *       tpool_destroy(pool);
+ *       return 0;
+ *   }
+ *
+ * To use this library in your project, add the following
+ *
+ * #define MPMC_TPOOL_IMPLEMENTATION
+ * #include "mpmc_tpool.h"
+ *
+ * to a source file (once), then simply include the header normally.
+ *
+ * REQUIREMENTS:
+ *   - C11 atomics (stdatomic.h)
+ *   - POSIX threads (pthread.h)
+ */
+
+#ifndef MPMC_TPOOL_H
+#define MPMC_TPOOL_H
+
+#include <stdbool.h>
+
+// -----------------------------------------------------------------------------
+//  Configuration
+
+#ifndef TPOOL_CACHE_LINE
+#define TPOOL_CACHE_LINE 64
+#endif
+
+#ifndef TPOOL_DEFAULT_QUEUE_SIZE
+#define TPOOL_DEFAULT_QUEUE_SIZE 1024
+#endif
+
+// -----------------------------------------------------------------------------
+//  Public API
+
+struct tpool_s;
+typedef struct tpool_s tpool_t;
+
+/**
+ * @brief Creates a new thread pool
+ *
+ * @param nthreads       Number of worker threads (clamped to minimum 1)
+ * @param queue_capacity Queue size (0 uses default)
+ * @return               Thread pool handle
+ */
+tpool_t *tpool_init(int nthreads, int queue_capacity);
+
+/**
+ * @brief Submits a job to the thread pool
+ *
+ * Enqueues the job for execution. If the queue is full, executes inline
+ * on the calling thread. NULL function pointers are ignored.
+ *
+ * @param p   Thread pool
+ * @param fn  Job function to execute
+ * @param arg Argument passed to the job function
+ */
+void tpool_submit(tpool_t *p, int (*fn)(void *), void *arg);
+
+/**
+ * @brief Waits for all submitted jobs to complete
+ *
+ * Blocks until all currently queued and running jobs finish. The calling
+ * thread steals work from the queue to help make progress.
+ *
+ * @param p Thread pool
+ */
+void tpool_wait(tpool_t *p);
+
+/**
+ * @brief Destroys a thread pool
+ *
+ * Waits for all jobs to complete, stops workers, joins threads, and frees
+ * all resources. Safe to call with NULL.
+ *
+ * @param p Thread pool (may be NULL)
+ */
+void tpool_destroy(tpool_t *p);
+
+#endif // MPMC_TPOOL_H
+
+// -----------------------------------------------------------------------------
+//  Implementation
+
+#ifdef MPMC_TPOOL_IMPLEMENTATION
 
 #include <assert.h>
 #include <pthread.h>
 #include <stdalign.h>
 #include <stdatomic.h>
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef CACHE_LINE
-#define CACHE_LINE 64
-#endif
-
-#ifndef TPOOL_DEFAULT_QUEUE_SIZE
-#define TPOOL_DEFAULT_QUEUE_SIZE 1024u
-#endif
-
+// CPU relaxation hint for spin loops
 #if defined(__x86_64__) || defined(__i386__)
 #define tpool_relax() __asm__ __volatile__("pause" ::: "memory")
 #elif defined(__aarch64__) || defined(__arm__)
@@ -24,6 +123,9 @@
 #else
 #define tpool_relax() ((void)0)
 #endif
+
+// -----------------------------------------------------------------------------
+//  Lock-free MPMC Queue
 
 typedef struct
 {
@@ -35,19 +137,19 @@ typedef struct
 
 typedef struct
 {
-    alignas(CACHE_LINE) _Atomic int turn;
+    alignas(TPOOL_CACHE_LINE) _Atomic int turn;
     uint8_t data[JOB_SIZE];
 } tpool_slot_t;
 
 typedef struct
 {
-    alignas(CACHE_LINE) _Atomic int head;
-    alignas(CACHE_LINE) _Atomic int tail;
+    alignas(TPOOL_CACHE_LINE) _Atomic int head;
+    alignas(TPOOL_CACHE_LINE) _Atomic int tail;
     int capacity;
     tpool_slot_t *slots;
 } tpool_queue_t;
 
-static inline void queue_init(tpool_queue_t *q, int capacity)
+static void queue_init(tpool_queue_t *q, int capacity)
 {
     if (capacity == 0) capacity = TPOOL_DEFAULT_QUEUE_SIZE;
     q->capacity = capacity;
@@ -59,7 +161,7 @@ static inline void queue_init(tpool_queue_t *q, int capacity)
         atomic_store_explicit(&q->slots[i].turn, 0, memory_order_relaxed);
 }
 
-static inline bool try_enqueue(tpool_queue_t *q, const void *item)
+static bool try_enqueue(tpool_queue_t *q, const void *item)
 {
     int head = atomic_load_explicit(&q->head, memory_order_acquire);
     for (;;) {
@@ -76,13 +178,13 @@ static inline bool try_enqueue(tpool_queue_t *q, const void *item)
         } else {
             int prev = head;
             head = atomic_load_explicit(&q->head, memory_order_acquire);
-            if (head == prev) return false; // appears full
+            if (head == prev) return false;
             tpool_relax();
         }
     }
 }
 
-static inline bool try_dequeue(tpool_queue_t *q, void *item)
+static bool try_dequeue(tpool_queue_t *q, void *item)
 {
     int tail = atomic_load_explicit(&q->tail, memory_order_acquire);
     for (;;) {
@@ -100,31 +202,32 @@ static inline bool try_dequeue(tpool_queue_t *q, void *item)
         } else {
             int prev = tail;
             tail = atomic_load_explicit(&q->tail, memory_order_acquire);
-            if (tail == prev) return false; // appears empty
+            if (tail == prev) return false;
             tpool_relax();
         }
     }
 }
 
-// ------------------------------ Thread Pool  ------------------------------
+// -----------------------------------------------------------------------------
+//  Thread Pool
 
-typedef struct
+struct tpool_s
 {
     tpool_queue_t q;
 
     pthread_t *threads;
     int nthreads;
 
-    alignas(CACHE_LINE) _Atomic int queued; // number of jobs currently in the ring
-    alignas(CACHE_LINE) _Atomic int in_flight; // jobs not yet completed (queued + running)
-    alignas(CACHE_LINE) _Atomic bool stop;
+    alignas(TPOOL_CACHE_LINE) _Atomic int queued;
+    alignas(TPOOL_CACHE_LINE) _Atomic int in_flight;
+    alignas(TPOOL_CACHE_LINE) _Atomic bool stop;
 
     pthread_mutex_t mtx;
-    pthread_cond_t cv_work; // workers wait for queued == 0
-    pthread_cond_t cv_done; // waiters wait for in_flight == 0
-} tpool_t;
+    pthread_cond_t cv_work;
+    pthread_cond_t cv_done;
+};
 
-static inline void tpool_job_done(tpool_t *p)
+static void tpool_job_done(tpool_t *p)
 {
     int n = atomic_fetch_sub_explicit(&p->in_flight, 1, memory_order_acq_rel) - 1;
     if (n == 0) {
@@ -133,6 +236,7 @@ static inline void tpool_job_done(tpool_t *p)
         pthread_mutex_unlock(&p->mtx);
     }
 }
+
 static void *tpool_worker(void *arg)
 {
     tpool_t *p = arg;
@@ -149,13 +253,11 @@ static void *tpool_worker(void *arg)
             tpool_relax();
         }
 
-        // No job visible right now.
         if (atomic_load_explicit(&p->stop, memory_order_acquire) &&
             atomic_load_explicit(&p->in_flight, memory_order_acquire) == 0) {
             return NULL;
         }
 
-        // Park until work arrives or stop requested.
         pthread_mutex_lock(&p->mtx);
         while (!atomic_load_explicit(&p->stop, memory_order_relaxed) &&
                atomic_load_explicit(&p->queued, memory_order_relaxed) == 0) {
@@ -165,7 +267,7 @@ static void *tpool_worker(void *arg)
     }
 }
 
-static inline tpool_t *tpool_init(int nthreads, int queue_capacity)
+tpool_t *tpool_init(int nthreads, int queue_capacity)
 {
     if (nthreads <= 0) nthreads = 1;
 
@@ -203,22 +305,18 @@ static inline tpool_t *tpool_init(int nthreads, int queue_capacity)
     return p;
 }
 
-// Submit one job. Runs synchronously when full.
-static inline void tpool_submit(tpool_t *p, int (*fn)(void *), void *arg)
+void tpool_submit(tpool_t *p, int (*fn)(void *), void *arg)
 {
     assert(p);
 
     if (!fn) return;
     if (atomic_load_explicit(&p->stop, memory_order_acquire)) return;
 
-    // Reserve completion slot first. Prevents tpool_wait from observing 0 spuriously
     atomic_fetch_add_explicit(&p->in_flight, 1, memory_order_acq_rel);
 
     tpool_job_t job = { fn, arg };
 
     if (try_enqueue(&p->q, &job)) {
-        // Avoid waking all at once.
-        // Wake at most N workers per burt. (Signals first nthreads, enqueus after idle.)
         int prev = atomic_fetch_add_explicit(&p->queued, 1, memory_order_release);
         if (prev < p->nthreads) {
             pthread_mutex_lock(&p->mtx);
@@ -226,14 +324,12 @@ static inline void tpool_submit(tpool_t *p, int (*fn)(void *), void *arg)
             pthread_mutex_unlock(&p->mtx);
         }
     } else {
-        // Queue is full: Just run it immediately.
         fn(arg);
         tpool_job_done(p);
     }
 }
 
-// Wait until all submitted jobs complete.
-static inline void tpool_wait(tpool_t *p)
+void tpool_wait(tpool_t *p)
 {
     assert(p);
 
@@ -241,7 +337,6 @@ static inline void tpool_wait(tpool_t *p)
         if (atomic_load_explicit(&p->in_flight, memory_order_acquire) == 0)
             return;
 
-        // Maybe we can help!
         if (atomic_load_explicit(&p->queued, memory_order_acquire) != 0) {
             tpool_job_t job;
             if (try_dequeue(&p->q, &job)) {
@@ -254,7 +349,6 @@ static inline void tpool_wait(tpool_t *p)
             }
         }
 
-        // Nothing left to help with right now; Zzz Zzz.
         pthread_mutex_lock(&p->mtx);
         while (atomic_load_explicit(&p->in_flight, memory_order_acquire) != 0 &&
                atomic_load_explicit(&p->queued, memory_order_acquire) == 0) {
@@ -264,8 +358,7 @@ static inline void tpool_wait(tpool_t *p)
     }
 }
 
-// Stop workers after draining current work, then join.
-static inline void tpool_destroy(tpool_t *p)
+void tpool_destroy(tpool_t *p)
 {
     if (!p) return;
 
@@ -287,3 +380,5 @@ static inline void tpool_destroy(tpool_t *p)
 
     free(p);
 }
+
+#endif // MPMC_TPOOL_IMPLEMENTATION

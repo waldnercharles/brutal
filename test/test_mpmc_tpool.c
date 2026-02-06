@@ -1,11 +1,10 @@
+#define MPMC_TPOOL_IMPLEMENTATION
 #include "mpmc_tpool.h"
 #include "pico_unit.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
 #include <unistd.h>
-
-// ---- helpers ----------------------------------------------------------------
 
 static int mpmc_add_one(void *arg)
 {

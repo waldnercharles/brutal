@@ -1,4 +1,6 @@
 #include "../include/brutal_ecs.h"
+
+#define MPMC_TPOOL_IMPLEMENTATION
 #include "mpmc_tpool.h"
 
 #include <pthread.h>
@@ -16,16 +18,14 @@ int random_int(int min, int max)
     return rand() % (max + 1 - min) + min;
 }
 
-#define MIN_ENTITIES (1 * 1000)
-#define MAX_ENTITIES (1000 * 1000)
+#define MIN_ENTITIES (1 * 1024)
+#define MAX_ENTITIES (1024 * 1024)
 
 static double bench_wall_start_ms = 0.0;
 static double bench_cpu_start_ms = 0.0;
 static ecs_t *ecs = NULL;
 
 static _Atomic uint64_t bench_last_progress_ms = 0;
-static uint64_t bench_watchdog_ms = 60000;
-static int bench_watchdog_running = 0;
 
 static void setup();
 static void teardown();
@@ -46,29 +46,6 @@ static void bench_progress(const char *label)
 {
     (void)label;
     atomic_store(&bench_last_progress_ms, (uint64_t)now_wall_ms());
-}
-
-static void *bench_watchdog_thread(void *arg)
-{
-    (void)arg;
-    while (bench_watchdog_running) {
-        uint64_t last = atomic_load(&bench_last_progress_ms);
-        uint64_t now = (uint64_t)now_wall_ms();
-        if (bench_watchdog_ms > 0 && last > 0 && now - last > bench_watchdog_ms) {
-            fprintf(
-                stderr,
-                "Benchmark watchdog timeout after %llu ms without progress\n",
-                (unsigned long long)bench_watchdog_ms
-            );
-            abort();
-        }
-
-        struct timespec ts;
-        ts.tv_sec = 0;
-        ts.tv_nsec = 100 * 1000 * 1000;
-        nanosleep(&ts, NULL);
-    }
-    return NULL;
 }
 
 static void bench_begin(const char *name)
@@ -629,122 +606,16 @@ static bench_result_t run_threading_test(
     return result;
 }
 
-static void run_threading_analysis(void)
-{
-    int entity_counts[] = { 100, 1000, 10000, 100000, 500000 };
-    int thread_counts[] = { 1, 2, 4, 8, 16, 32, 64 };
-    int num_entity_tests = sizeof(entity_counts) / sizeof(entity_counts[0]);
-    int num_thread_tests = sizeof(thread_counts) / sizeof(thread_counts[0]);
-
-    // Store results for comparison
-    bench_result_t light_results[num_entity_tests][num_thread_tests];
-    bench_result_t heavy_results[num_entity_tests][num_thread_tests];
-
-    printf("---------------------------------------------------------------\n");
-    printf("LIGHT WORK (simple position update)\n");
-
-    for (int e = 0; e < num_entity_tests; e++) {
-        double baseline_wall_ms = 0.0;
-        for (int t = 0; t < num_thread_tests; t++) {
-            printf("Threading test (LIGHT) entities=%d threads=%d\n", entity_counts[e], thread_counts[t]);
-            bench_progress("threading_light");
-            light_results[e][t] = run_threading_test(
-                entity_counts[e],
-                thread_counts[t],
-                light_work_system,
-                "LIGHT",
-                baseline_wall_ms
-            );
-            if (t == 0) baseline_wall_ms = light_results[e][t].wall_time_ms;
-        }
-        printf("\n");
-    }
-
-    printf("---------------------------------------------------------------\n");
-    printf("HEAVY WORK (100 iterations per entity)\n");
-
-    for (int e = 0; e < num_entity_tests; e++) {
-        double baseline_wall_ms = 0.0;
-        for (int t = 0; t < num_thread_tests; t++) {
-            printf("Threading test (HEAVY) entities=%d threads=%d\n", entity_counts[e], thread_counts[t]);
-            bench_progress("threading_heavy");
-            heavy_results[e][t] = run_threading_test(
-                entity_counts[e],
-                thread_counts[t],
-                heavy_work_system,
-                "HEAVY",
-                baseline_wall_ms
-            );
-            if (t == 0) baseline_wall_ms = heavy_results[e][t].wall_time_ms;
-        }
-        printf("\n");
-    }
-
-    // Print speedup summary
-    printf("---------------------------------------------------------------\n");
-    printf(" Summary\n");
-    printf("\n");
-
-    printf("LIGHT WORK speedup:\n");
-    printf("  Entities  |   2T   |   4T   |   8T   |\n");
-    printf("  ----------|--------|--------|--------|\n");
-    for (int e = 0; e < num_entity_tests; e++) {
-        double base = light_results[e][0].wall_time_ms;
-        printf("  %7d   |", entity_counts[e]);
-        for (int t = 1; t < num_thread_tests; t++) {
-            double speedup = base / light_results[e][t].wall_time_ms;
-            const char *indicator = speedup >= 1.0 ? "+" : "-";
-            printf(" %s%.2fx |", indicator, speedup);
-        }
-        printf("\n");
-    }
-
-    printf("\n");
-    printf("HEAVY WORK speedup:\n");
-    printf("  Entities  |   2T   |   4T   |   8T   |\n");
-    printf("  ----------|--------|--------|--------|\n");
-    for (int e = 0; e < num_entity_tests; e++) {
-        double base = heavy_results[e][0].wall_time_ms;
-        printf("  %7d   |", entity_counts[e]);
-        for (int t = 1; t < num_thread_tests; t++) {
-            double speedup = base / heavy_results[e][t].wall_time_ms;
-            const char *indicator = speedup >= 1.0 ? "+" : "-";
-            printf(" %s%.2fx |", indicator, speedup);
-        }
-        printf("\n");
-    }
-}
-
 int main(void)
 {
-    const char *watchdog_env = getenv("BRUTAL_BENCH_WATCHDOG_MS");
-    if (watchdog_env && watchdog_env[0] != '\0') {
-        long long v = atoll(watchdog_env);
-        bench_watchdog_ms = v > 0 ? (uint64_t)v : 0;
-    }
-
-    if (bench_watchdog_ms > 0) {
-        pthread_t tid;
-        bench_watchdog_running = 1;
-        bench_progress("start");
-        if (pthread_create(&tid, NULL, bench_watchdog_thread, NULL) == 0) {
-            pthread_detach(tid);
-        }
-    }
-
-    // Run threading analysis first
-    run_threading_analysis();
-
     // Single-threaded benchmarks
     num_threads = 1;
     use_tpool = 0;
     run_benchmarks("single-threaded");
 
     // Multi-threaded benchmarks
-    num_threads = 64;
+    num_threads = 14;
     use_tpool = 1;
-    run_benchmarks("multi-threaded, 8 threads");
-
-    bench_watchdog_running = 0;
+    run_benchmarks("multi-threaded, 14 threads");
     return 0;
 }
