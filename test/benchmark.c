@@ -1,7 +1,5 @@
-#include "../include/brutal_ecs.h"
-
-#define MPMC_TPOOL_IMPLEMENTATION
-#include "mpmc_tpool.h"
+#include "brutal_ecs.h"
+#include "brutal_tpool.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -117,7 +115,7 @@ static tpool_t *tpool = NULL;
 static int bench_enqueue_cb(int (*fn)(void *args), void *fn_args, void *udata)
 {
     (void)udata;
-    tpool_submit(tpool, fn, fn_args);
+    tpool_enqueue(tpool, fn, fn_args);
     return 0;
 }
 
@@ -159,7 +157,7 @@ static void setup()
 {
     ecs = ecs_new();
     if (use_tpool && num_threads > 1) {
-        tpool = tpool_init(num_threads, 0);
+        tpool = tpool_new(num_threads, 0);
         ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, num_threads);
     }
 
@@ -171,7 +169,7 @@ static void setup_destroy_with_two_components()
 {
     ecs = ecs_new();
     if (use_tpool && num_threads > 1) {
-        tpool = tpool_init(num_threads, 0);
+        tpool = tpool_new(num_threads, 0);
         ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, num_threads);
     }
 
@@ -189,7 +187,7 @@ static void setup_three_systems_min()
 {
     ecs = ecs_new();
     if (use_tpool && num_threads > 1) {
-        tpool = tpool_init(num_threads, 0);
+        tpool = tpool_new(num_threads, 0);
         ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, num_threads);
     }
 
@@ -215,7 +213,7 @@ static void setup_three_systems_max()
 {
     ecs = ecs_new();
     if (use_tpool && num_threads > 1) {
-        tpool = tpool_init(num_threads, 0);
+        tpool = tpool_new(num_threads, 0);
         ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, num_threads);
     }
 
@@ -252,7 +250,7 @@ static void setup_get()
 {
     ecs = ecs_new();
     if (use_tpool && num_threads > 1) {
-        tpool = tpool_init(num_threads, 0);
+        tpool = tpool_new(num_threads, 0);
         ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, num_threads);
     }
 
@@ -529,7 +527,7 @@ static bench_result_t run_threading_test(
     tpool_t *test_pool = NULL;
 
     if (thread_count > 1) {
-        test_pool = tpool_init(thread_count, 0);
+        test_pool = tpool_new(thread_count, 0);
         ecs_set_task_callbacks(test_ecs, bench_enqueue_cb, bench_wait_cb, NULL, thread_count);
         tpool = test_pool; // Set global for callbacks
     }

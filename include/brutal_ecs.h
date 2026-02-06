@@ -44,33 +44,14 @@
 #ifndef BRUTAL_ECS_H
 #define BRUTAL_ECS_H
 
+#include <assert.h>
 #include <limits.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifndef __STDC_NO_ATOMICS__
-#include <stdatomic.h>
-#else
-#error "brutal_ecs.h requires C11 atomic support"
-#endif
-
-#ifdef NDEBUG
-#define ECS_ASSERT(expr) ((void)0)
-#else
-#ifndef ECS_ASSERT
-#include <assert.h>
-#define ECS_ASSERT(expr) (assert(expr))
-#endif
-#endif
-
-#ifndef ECS_MALLOC
-#define ECS_MALLOC(sz) malloc(sz)
-#define ECS_REALLOC(p, sz) realloc(p, sz)
-#define ECS_FREE(p) free(p)
-#endif
 
 #ifndef ECS_MAX_COMPONENTS
 #define ECS_MAX_COMPONENTS 256
@@ -81,7 +62,7 @@
 #endif
 
 #ifndef ECS_MT_MAX_TASKS
-#define ECS_MT_MAX_TASKS 64
+#define ECS_MT_MAX_TASKS 1024
 #endif
 
 #ifndef ECS_SCRATCH_BUFFER_SIZE
@@ -162,19 +143,19 @@ static inline void ecs_bs_copy(ecs_bitset *dst, ecs_bitset *src)
 
 static inline void ecs_bs_set(ecs_bitset *bs, int bit)
 {
-    ECS_ASSERT(bit < ECS_MAX_COMPONENTS);
+    assert(bit < ECS_MAX_COMPONENTS);
     bs->words[bit >> 6] |= (1ull << (bit & 63u));
 }
 
 static inline void ecs_bs_clear(ecs_bitset *bs, int bit)
 {
-    ECS_ASSERT(bit < ECS_MAX_COMPONENTS);
+    assert(bit < ECS_MAX_COMPONENTS);
     bs->words[bit >> 6] &= ~(1ull << (bit & 63u));
 }
 
 static inline bool ecs_bs_test(ecs_bitset *bs, int bit)
 {
-    ECS_ASSERT(bit < ECS_MAX_COMPONENTS);
+    assert(bit < ECS_MAX_COMPONENTS);
     return ((bs->words[bit >> 6] >> (bit & 63u)) & 1ull);
 }
 
@@ -230,8 +211,8 @@ static inline void ecs_ss_init(ecs_sparse_set *set)
 
 static inline void ecs_ss_free(ecs_sparse_set *set)
 {
-    ECS_FREE(set->sparse);
-    ECS_FREE(set->dense);
+    free(set->sparse);
+    free(set->dense);
     memset(set, 0, sizeof(*set));
 }
 
@@ -241,8 +222,8 @@ static inline void ecs_ss_reserve_sparse(ecs_sparse_set *set, int need)
     int old = set->sparse_cap;
     int cap = old ? old : 1;
     while (cap < need) cap <<= 1;
-    set->sparse = (int *)ECS_REALLOC(set->sparse, cap * sizeof(int));
-    ECS_ASSERT(set->sparse);
+    set->sparse = (int *)realloc(set->sparse, cap * sizeof(int));
+    assert(set->sparse);
     memset(set->sparse + old, 0, (cap - old) * sizeof(int));
     set->sparse_cap = cap;
 }
@@ -252,8 +233,8 @@ static inline void ecs_ss_reserve_dense(ecs_sparse_set *set, int need)
     if (need <= set->dense_cap) return;
     int cap = set->dense_cap ? set->dense_cap : 1;
     while (cap < need) cap <<= 1;
-    set->dense = (ecs_entity *)ECS_REALLOC(set->dense, cap * sizeof(ecs_entity));
-    ECS_ASSERT(set->dense);
+    set->dense = (ecs_entity *)realloc(set->dense, cap * sizeof(ecs_entity));
+    assert(set->dense);
     set->dense_cap = cap;
 }
 
@@ -264,7 +245,7 @@ static inline int ecs_ss_has(ecs_sparse_set *set, ecs_entity entity)
 
 static inline int ecs_ss_index_of(ecs_sparse_set *s, ecs_entity entity)
 {
-    ECS_ASSERT(ecs_ss_has(s, entity));
+    assert(ecs_ss_has(s, entity));
     return s->sparse[entity] - 1;
 }
 
@@ -315,7 +296,7 @@ static inline void ecs_pool_init(ecs_pool *pool, int element_size)
 
 static inline void ecs_pool_free(ecs_pool *pool)
 {
-    ECS_FREE(pool->data);
+    free(pool->data);
     ecs_ss_free(&pool->set);
     memset(pool, 0, sizeof(*pool));
 }
@@ -324,11 +305,8 @@ static inline void ecs_pool_reserve(ecs_pool *pool, int need)
 {
     if (need <= pool->set.dense_cap) return;
     ecs_ss_reserve_dense(&pool->set, need);
-    pool->data = ECS_REALLOC(
-        pool->data,
-        (size_t)pool->set.dense_cap * (size_t)pool->element_size
-    );
-    ECS_ASSERT(pool->data);
+    pool->data = realloc(pool->data, (size_t)pool->set.dense_cap * (size_t)pool->element_size);
+    assert(pool->data);
 }
 
 static inline void *ecs_pool_ptr_at(ecs_pool *pool, int idx)
@@ -483,26 +461,26 @@ static inline void ecs_cmd_buffer_init(ecs_cmd_buffer *cb, int initial_capacity)
 {
     memset(cb, 0, sizeof(*cb));
     cb->capacity = initial_capacity;
-    cb->commands = (ecs_cmd *)ECS_MALLOC((size_t)initial_capacity * sizeof(ecs_cmd));
-    ECS_ASSERT(cb->commands);
+    cb->commands = (ecs_cmd *)malloc((size_t)initial_capacity * sizeof(ecs_cmd));
+    assert(cb->commands);
 
     cb->data_capacity = 1024 * 1024;
-    cb->data_buffer = (uint8_t *)ECS_MALLOC((size_t)cb->data_capacity);
-    ECS_ASSERT(cb->data_buffer);
+    cb->data_buffer = (uint8_t *)malloc((size_t)cb->data_capacity);
+    assert(cb->data_buffer);
 }
 
 static inline void ecs_cmd_buffer_free(ecs_cmd_buffer *cb)
 {
-    ECS_FREE(cb->commands);
-    ECS_FREE(cb->data_buffer);
+    free(cb->commands);
+    free(cb->data_buffer);
     memset(cb, 0, sizeof(*cb));
 }
 
 static inline void ecs_cmd_buffer_grow(ecs_cmd_buffer *cb)
 {
     int new_cap = cb->capacity * 2;
-    cb->commands = (ecs_cmd *)ECS_REALLOC(cb->commands, (size_t)new_cap * sizeof(ecs_cmd));
-    ECS_ASSERT(cb->commands);
+    cb->commands = (ecs_cmd *)realloc(cb->commands, (size_t)new_cap * sizeof(ecs_cmd));
+    assert(cb->commands);
     cb->capacity = new_cap;
 }
 
@@ -511,8 +489,8 @@ static inline void *ecs_cmd_alloc_data(ecs_cmd_buffer *cb, int size)
     if (cb->data_offset + size > cb->data_capacity) {
         int new_cap = cb->data_capacity * 2;
         while (new_cap < cb->data_offset + size) new_cap *= 2;
-        cb->data_buffer = (uint8_t *)ECS_REALLOC(cb->data_buffer, (size_t)new_cap);
-        ECS_ASSERT(cb->data_buffer);
+        cb->data_buffer = (uint8_t *)realloc(cb->data_buffer, (size_t)new_cap);
+        assert(cb->data_buffer);
         cb->data_capacity = new_cap;
     }
 
@@ -546,8 +524,8 @@ static inline void ecs_cmd_enqueue(ecs_t *ecs, ecs_cmd *cmd)
 
 static inline ecs_t *ecs_new(void)
 {
-    ecs_t *ecs = (ecs_t *)ECS_MALLOC(sizeof(ecs_t));
-    ECS_ASSERT(ecs);
+    ecs_t *ecs = (ecs_t *)malloc(sizeof(ecs_t));
+    assert(ecs);
 
     memset(ecs, 0, sizeof(*ecs));
     atomic_store(&ecs->next_entity, 1);
@@ -556,13 +534,13 @@ static inline ecs_t *ecs_new(void)
 
     // Allocate free list (grows as needed)
     ecs->free_list_capacity = 1024;
-    ecs->free_list_next = (int *)ECS_MALLOC((size_t)ecs->free_list_capacity * sizeof(int));
-    ECS_ASSERT(ecs->free_list_next);
+    ecs->free_list_next = (int *)malloc((size_t)ecs->free_list_capacity * sizeof(int));
+    assert(ecs->free_list_next);
 
     // Allocate scratch buffers
     for (int i = 0; i < ECS_MT_MAX_TASKS; i++) {
-        ecs->task_scratch[i] = (uint8_t *)ECS_MALLOC(ECS_SCRATCH_BUFFER_SIZE);
-        ECS_ASSERT(ecs->task_scratch[i]);
+        ecs->task_scratch[i] = (uint8_t *)malloc(ECS_SCRATCH_BUFFER_SIZE);
+        assert(ecs->task_scratch[i]);
         ecs->task_scratch_capacity[i] = ECS_SCRATCH_BUFFER_SIZE;
     }
 
@@ -579,19 +557,17 @@ static inline void ecs_free(ecs_t *ecs)
     if (!ecs) return;
 
     for (int i = 0; i < ecs->comp_count; i++) ecs_pool_free(&ecs->pools[i]);
-    ECS_FREE(ecs->free_list_next);
+    free(ecs->free_list_next);
 
     // Free scratch buffers
-    for (int i = 0; i < ECS_MT_MAX_TASKS; i++) {
-        ECS_FREE(ecs->task_scratch[i]);
-    }
+    for (int i = 0; i < ECS_MT_MAX_TASKS; i++) { free(ecs->task_scratch[i]); }
 
     // Free command buffer
     for (int i = 0; i < ECS_MT_MAX_TASKS; i++) {
         ecs_cmd_buffer_free(&ecs->cmd_buffers[i]);
     }
 
-    ECS_FREE(ecs);
+    free(ecs);
 }
 
 static inline void ecs_set_task_callbacks(
@@ -636,7 +612,7 @@ static inline void ecs_free_list_push(ecs_t *ecs, ecs_entity entity)
 
 static inline void *ecs_add_deferred(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
 {
-    ECS_ASSERT(component < ecs->comp_count);
+    assert(component < ecs->comp_count);
 
     // Allocate component data from command buffer's data arena
     int element_size = ecs->pools[component].element_size;
@@ -656,7 +632,7 @@ static inline void *ecs_add_deferred(ecs_t *ecs, ecs_entity entity, ecs_comp_t c
 
 static inline void ecs_remove_deferred(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
 {
-    ECS_ASSERT(component < ecs->comp_count);
+    assert(component < ecs->comp_count);
 
     ecs_cmd cmd = { .type = ECS_CMD_REMOVE,
                     .entity = entity,
@@ -700,8 +676,8 @@ static inline void ecs_destroy(ecs_t *ecs, ecs_entity e)
         int new_cap = ecs->free_list_capacity * 2;
         while (new_cap <= (int)e) new_cap *= 2;
         ecs->free_list_next = (int *)
-            ECS_REALLOC(ecs->free_list_next, (size_t)new_cap * sizeof(int));
-        ECS_ASSERT(ecs->free_list_next);
+            realloc(ecs->free_list_next, (size_t)new_cap * sizeof(int));
+        assert(ecs->free_list_next);
         ecs->free_list_capacity = new_cap;
     }
 
@@ -712,7 +688,7 @@ static inline void ecs_destroy(ecs_t *ecs, ecs_entity e)
 
 static inline ecs_comp_t ecs_register_component(ecs_t *ecs, int size)
 {
-    ECS_ASSERT(ecs->comp_count < ECS_MAX_COMPONENTS);
+    assert(ecs->comp_count < ECS_MAX_COMPONENTS);
     ecs_comp_t id = (ecs_comp_t)ecs->comp_count++;
     ecs_pool_init(&ecs->pools[id], size);
     return id;
@@ -729,7 +705,7 @@ static inline void *ecs_add(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
 {
     if (ecs->in_progress) return ecs_add_deferred(ecs, entity, component);
 
-    ECS_ASSERT(component < ecs->comp_count);
+    assert(component < ecs->comp_count);
     return ecs_pool_add(&ecs->pools[component], entity);
 }
 
@@ -742,17 +718,17 @@ static inline void ecs_remove(ecs_t *ecs, ecs_entity entity, ecs_comp_t componen
         return;
     }
 
-    ECS_ASSERT(component < ecs->comp_count);
+    assert(component < ecs->comp_count);
     (void)ecs_pool_remove(&ecs->pools[component], entity);
 }
 static inline void *ecs_get(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
 {
-    ECS_ASSERT(component < ecs->comp_count);
+    assert(component < ecs->comp_count);
     return ecs_pool_get(&ecs->pools[component], entity);
 }
 static inline int ecs_has(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
 {
-    ECS_ASSERT(component < ecs->comp_count);
+    assert(component < ecs->comp_count);
     return ecs_ss_has(&ecs->pools[component].set, entity);
 }
 
@@ -760,8 +736,8 @@ static inline int ecs_has(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
 
 static inline ecs_sys_t ecs_sys_create(ecs_t *ecs, ecs_system_fn fn, void *udata)
 {
-    ECS_ASSERT(ecs->system_count < ECS_MAX_SYSTEMS);
-    ECS_ASSERT(fn);
+    assert(ecs->system_count < ECS_MAX_SYSTEMS);
+    assert(fn);
 
     ecs_sys_t sys = (ecs_sys_t)ecs->system_count++;
     ecs_system *s = &ecs->systems[sys];
@@ -776,7 +752,7 @@ static inline ecs_sys_t ecs_sys_create(ecs_t *ecs, ecs_system_fn fn, void *udata
 
 static inline void ecs_sys_require(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
 {
-    ECS_ASSERT(sys >= 0 && sys < ecs->system_count);
+    assert(sys >= 0 && sys < ecs->system_count);
     ecs_system *s = &ecs->systems[sys];
     ecs_bs_set(&s->all_of, comp);
     ecs_bs_set(&s->read, comp);
@@ -785,13 +761,13 @@ static inline void ecs_sys_require(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
 
 static inline void ecs_sys_exclude(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
 {
-    ECS_ASSERT(sys >= 0 && sys < ecs->system_count);
+    assert(sys >= 0 && sys < ecs->system_count);
     ecs_bs_set(&ecs->systems[sys].none_of, comp);
 }
 
 static inline void ecs_sys_read(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
 {
-    ECS_ASSERT(sys >= 0 && sys < ecs->system_count);
+    assert(sys >= 0 && sys < ecs->system_count);
     ecs_system *s = &ecs->systems[sys];
     ecs_bs_set(&s->read, comp);
     ecs_bs_set(&s->rw, comp);
@@ -799,7 +775,7 @@ static inline void ecs_sys_read(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
 
 static inline void ecs_sys_write(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
 {
-    ECS_ASSERT(sys >= 0 && sys < ecs->system_count);
+    assert(sys >= 0 && sys < ecs->system_count);
     ecs_system *s = &ecs->systems[sys];
     ecs_bs_set(&s->write, comp);
     ecs_bs_set(&s->rw, comp);
@@ -807,37 +783,37 @@ static inline void ecs_sys_write(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
 
 static inline void ecs_sys_enable(ecs_t *ecs, ecs_sys_t sys)
 {
-    ECS_ASSERT(sys >= 0 && sys < ecs->system_count);
+    assert(sys >= 0 && sys < ecs->system_count);
     ecs->systems[sys].enabled = true;
 }
 
 static inline void ecs_sys_disable(ecs_t *ecs, ecs_sys_t sys)
 {
-    ECS_ASSERT(sys >= 0 && sys < ecs->system_count);
+    assert(sys >= 0 && sys < ecs->system_count);
     ecs->systems[sys].enabled = false;
 }
 
 static inline void ecs_sys_set_phase(ecs_t *ecs, ecs_sys_t sys, int phase)
 {
-    ECS_ASSERT(sys >= 0 && sys < ecs->system_count);
+    assert(sys >= 0 && sys < ecs->system_count);
     ecs->systems[sys].phase = phase;
 }
 
 static inline int ecs_sys_get_phase(ecs_t *ecs, ecs_sys_t sys)
 {
-    ECS_ASSERT(sys >= 0 && sys < ecs->system_count);
+    assert(sys >= 0 && sys < ecs->system_count);
     return ecs->systems[sys].phase;
 }
 
 static inline void ecs_sys_set_udata(ecs_t *ecs, ecs_sys_t sys, void *udata)
 {
-    ECS_ASSERT(sys >= 0 && sys < ecs->system_count);
+    assert(sys >= 0 && sys < ecs->system_count);
     ecs->systems[sys].udata = udata;
 }
 
 static inline void *ecs_sys_get_udata(ecs_t *ecs, ecs_sys_t sys)
 {
-    ECS_ASSERT(sys >= 0 && sys < ecs->system_count);
+    assert(sys >= 0 && sys < ecs->system_count);
     return ecs->systems[sys].udata;
 }
 
@@ -860,7 +836,7 @@ static inline int ecs_phase_can_accept(ecs_phase *p, ecs_system *s)
 
 static inline void ecs_phase_add_system(ecs_phase *p, int sys_index, ecs_system *s)
 {
-    ECS_ASSERT(p->sys_count < ECS_MAX_SYSTEMS);
+    assert(p->sys_count < ECS_MAX_SYSTEMS);
     p->sys_idx[p->sys_count++] = sys_index;
     ecs_bs_or_into(&p->read_union, &s->read);
     ecs_bs_or_into(&p->write_union, &s->write);
@@ -889,9 +865,9 @@ static inline int ecs_build_phases(ecs_t *ecs, ecs_phase *out_phases, int max_ph
         if (placed) continue;
 
         // Create new phase for this system
-        ECS_ASSERT(phase_count < max_phases);
+        assert(phase_count < max_phases);
         ecs_phase *p = &out_phases[phase_count];
-        ECS_ASSERT(ecs_phase_can_accept(p, s));
+        assert(ecs_phase_can_accept(p, s));
         ecs_phase_add_system(p, i, s);
         phase_count++;
     }
@@ -901,7 +877,7 @@ static inline int ecs_build_phases(ecs_t *ecs, ecs_phase *out_phases, int max_ph
 
 static inline void ecs_sync(ecs_t *ecs)
 {
-    ECS_ASSERT(!ecs->in_progress);
+    assert(!ecs->in_progress);
 
     // Process all commands (order between tasks is not guaranteed)
     for (int t = 0; t < ecs->task_count; t++) {
@@ -914,7 +890,7 @@ static inline void ecs_sync(ecs_t *ecs)
                 case ECS_CMD_DESTROY: ecs_destroy(ecs, target); break;
 
                 case ECS_CMD_ADD: {
-                    ECS_ASSERT(cmd->component < ecs->comp_count);
+                    assert(cmd->component < ecs->comp_count);
                     void *dst = ecs_pool_add(&ecs->pools[cmd->component], target);
                     int elem_size = ecs->pools[cmd->component].element_size;
                     memcpy(dst, cmd->component_data, (size_t)elem_size);
@@ -922,7 +898,7 @@ static inline void ecs_sync(ecs_t *ecs)
                 }
 
                 case ECS_CMD_REMOVE:
-                    ECS_ASSERT(cmd->component < ecs->comp_count);
+                    assert(cmd->component < ecs->comp_count);
                     ecs_pool_remove(&ecs->pools[cmd->component], target);
                     break;
             }
@@ -1013,8 +989,8 @@ static inline int ecs_run_system_task(void *args_v)
     int needed = slice_count * sizeof(ecs_entity);
     if (needed > args->scratch_capacity) {
         int new_capacity = needed * 2;
-        args->scratch_buffer = (uint8_t *)ECS_REALLOC(args->scratch_buffer, new_capacity);
-        ECS_ASSERT(args->scratch_buffer);
+        args->scratch_buffer = (uint8_t *)realloc(args->scratch_buffer, new_capacity);
+        assert(args->scratch_buffer);
         args->scratch_capacity = new_capacity;
 
         ecs->task_scratch[args->task_index] = args->scratch_buffer;
@@ -1048,7 +1024,7 @@ done:
 static inline int ecs_run_system(ecs_t *ecs, ecs_sys_t sys, float dt)
 {
     (void)dt;
-    ECS_ASSERT(sys >= 0 && sys < ecs->system_count);
+    assert(sys >= 0 && sys < ecs->system_count);
 
     ecs_system *s = &ecs->systems[sys];
     if (!s->enabled) return 0;
