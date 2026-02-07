@@ -75,7 +75,7 @@ extern "C" {
  *
  * @param name The name of the test. Must be a valid C function name
  */
-#define TEST_CASE(name) static bool name(void)
+#define TEST_CASE(name) static bool name()
 
 /**
  * @brief Asserts that a condition is true
@@ -96,7 +96,7 @@ extern "C" {
  * @brief Runs a unit test function.
  *
  * IMPORTANT: The function `test_fp` must return `true`. The test function has
- * the signature, `bool test_func(void)`.
+ * the signature, `bool test_func()`.
  *
  * @param test_fp The test function to execute
  */
@@ -107,11 +107,11 @@ extern "C" {
  *
  * @param name The name of the test suite
  */
-#define TEST_SUITE(name) void name(void)
+#define TEST_SUITE(name) void name()
 
 /**
  * @brief Runs a series of unit tests. The test suite function has the signature,
- * `void suite_func(void)`.
+ * `void suite_func()`.
  *
  * @param suite_fp The test suite function to run
  */
@@ -120,7 +120,7 @@ extern "C" {
 /**
  * @brief Functions that are run before or after a number of unit tests execute.
  */
-typedef void (*pu_setup_fn)(void);
+typedef void (*pu_setup_fn)();
 
 /**
  * @brief Sets the current setup and teardown functions.
@@ -128,7 +128,7 @@ typedef void (*pu_setup_fn)(void);
  * Sets the current setup and teardown functions. The setup function is called
  * prior to each unit test and the teardown function after. Either of these
  * functions can be `NULL`. The setup and teardown functions have the signature,
- * `void func(void)`.
+ * `void func()`.
  *
  * @param setup_fp The setup function
  * @param teardown_fp The teardown function
@@ -138,7 +138,7 @@ void pu_setup(pu_setup_fn setup_fp, pu_setup_fn teardown_fp);
 /**
  * @brief Disables the setup and teardown functions by setting them to `NULL`.
  */
-void pu_clear_setup(void);
+void pu_clear_setup();
 
 /**
  * @brief Turns on terminal colors. NOTE: Off by default.
@@ -153,21 +153,21 @@ void pu_display_time(bool enabled);
 /**
  * @brief Prints test statistics.
  */
-void pu_print_stats(void);
+void pu_print_stats();
 
 /**
  * @brief Check whether at least one test failed.
  *
  * @return true if any test failed, false if they all passed
  */
-bool pu_test_failed(void);
+bool pu_test_failed();
 
 /*
  * WARNING: These functions are not meant to be called directly. Use the macros
  * instead.
  */
-typedef bool (*pu_test_fn)(void);
-typedef void (*pu_suite_fn)(void);
+typedef bool (*pu_test_fn)();
+typedef void (*pu_suite_fn)();
 
 /**
  * @brief Used internally
@@ -225,7 +225,7 @@ pu_setup (pu_setup_fn fp_setup, pu_setup_fn fp_teardown)
 }
 
 void
-pu_clear_setup (void)
+pu_clear_setup ()
 {
     pu_setup_fp = NULL;
     pu_teardown_fp = NULL;
@@ -244,7 +244,7 @@ pu_display_time (bool enabled)
 }
 
 bool
-pu_test_failed(void)
+pu_test_failed()
 {
     return (pu_num_failed != 0);
 }
@@ -371,7 +371,7 @@ pu_run_suite (const char* const name, pu_suite_fn suite_fp)
 }
 
 void
-pu_print_stats (void)
+pu_print_stats ()
 {
     printf("===============================================================\n");
 

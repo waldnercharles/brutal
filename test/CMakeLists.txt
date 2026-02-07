@@ -26,7 +26,13 @@ add_executable(
 )
 target_compile_options(
     test
-    PRIVATE -Wall -Wextra -Wpedantic -Werror -Wno-unused-function
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+        -Werror
+        -Wno-unused-function
+        -Wno-strict-prototypes
 )
 
 target_compile_definitions(test PRIVATE ECS_CACHE_LINE=128 TPOOL_CACHE_LINE=128)

@@ -37,6 +37,13 @@
  *       return 0;
  *   }
  *
+ * To use this library in your project, add the following
+ *
+ * #define BRUTAL_ECS_IMPLEMENTATION
+ * #include "brutal_ecs.h"
+ *
+ * to a source file (once), then simply include the header normally.
+ *
  * REQUIREMENTS:
  *   - C11 atomics (stdatomic.h)
  */
@@ -44,14 +51,8 @@
 #ifndef BRUTAL_ECS_H
 #define BRUTAL_ECS_H
 
-#include <assert.h>
-#include <limits.h>
-#include <stdatomic.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
+// -----------------------------------------------------------------------------
+//  Configuration
 
 #ifndef ECS_MAX_COMPONENTS
 #define ECS_MAX_COMPONENTS 256
@@ -65,6 +66,91 @@
 #define ECS_MT_MAX_TASKS 1024
 #endif
 
+#ifndef ECS_CACHE_LINE
+#define ECS_CACHE_LINE 64
+#endif
+
+// -----------------------------------------------------------------------------
+//  Public API
+
+typedef int ecs_entity;
+typedef unsigned char ecs_comp_t;
+typedef int ecs_sys_t;
+
+struct ecs_s;
+typedef struct ecs_s ecs_t;
+
+// View of matching entities passed to system callbacks
+typedef struct ecs_view
+{
+    ecs_entity *entities;
+    int count;
+    ecs_t *ecs;
+} ecs_view;
+
+typedef int (*ecs_system_fn)(ecs_t *ecs, ecs_view *view, void *udata);
+typedef int (*ecs_enqueue_task_fn)(int (*fn)(void *args), void *fn_args, void *udata);
+typedef void (*ecs_wait_tasks_fn)(void *udata);
+
+#define ECS_COMPONENT(ecs_ptr, Type)                                           \
+    ecs_register_component((ecs_ptr), (int)sizeof(Type))
+
+// Core
+ecs_t *ecs_new();
+void ecs_free(ecs_t *ecs);
+void ecs_set_task_callbacks(
+    ecs_t *ecs,
+    ecs_enqueue_task_fn enqueue_cb,
+    ecs_wait_tasks_fn wait_cb,
+    void *task_udata,
+    int task_count
+);
+
+// Entities
+ecs_entity ecs_create(ecs_t *ecs);
+void ecs_destroy(ecs_t *ecs, ecs_entity e);
+
+// Components
+ecs_comp_t ecs_register_component(ecs_t *ecs, int size);
+void *ecs_add(ecs_t *ecs, ecs_entity entity, ecs_comp_t component);
+void ecs_remove(ecs_t *ecs, ecs_entity entity, ecs_comp_t component);
+void *ecs_get(ecs_t *ecs, ecs_entity entity, ecs_comp_t component);
+int ecs_has(ecs_t *ecs, ecs_entity entity, ecs_comp_t component);
+
+// Systems
+ecs_sys_t ecs_sys_create(ecs_t *ecs, ecs_system_fn fn, void *udata);
+void ecs_sys_require(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp);
+void ecs_sys_exclude(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp);
+void ecs_sys_read(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp);
+void ecs_sys_write(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp);
+void ecs_sys_enable(ecs_t *ecs, ecs_sys_t sys);
+void ecs_sys_disable(ecs_t *ecs, ecs_sys_t sys);
+void ecs_sys_set_phase(ecs_t *ecs, ecs_sys_t sys, int phase);
+int ecs_sys_get_phase(ecs_t *ecs, ecs_sys_t sys);
+void ecs_sys_set_udata(ecs_t *ecs, ecs_sys_t sys, void *udata);
+void *ecs_sys_get_udata(ecs_t *ecs, ecs_sys_t sys);
+
+// Execution
+int ecs_run_system(ecs_t *ecs, ecs_sys_t sys, float dt);
+int ecs_progress(ecs_t *ecs, int phase_mask);
+
+#endif // BRUTAL_ECS_H
+
+// -----------------------------------------------------------------------------
+//  Implementation
+
+#ifdef BRUTAL_ECS_IMPLEMENTATION
+
+#include <assert.h>
+#include <limits.h>
+#include <stdalign.h>
+#include <stdatomic.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
 #ifndef ECS_SCRATCH_BUFFER_SIZE
 #define ECS_SCRATCH_BUFFER_SIZE (1024 * 1024)
 #endif
@@ -73,17 +159,13 @@
 #define ECS_CMD_BUFFER_CAPACITY 1024
 #endif
 
-#ifndef ECS_CACHE_LINE
-#define ECS_CACHE_LINE 64
-#endif
-
-/* --------------------------------- Bitset --------------------------------- */
+// -----------------------------------------------------------------------------
+//  Bitset
 
 #define ECS_BS_WORD_BITS 64
 #define ECS_BS_WORDS                                                           \
     ((ECS_MAX_COMPONENTS + (ECS_BS_WORD_BITS - 1)) / ECS_BS_WORD_BITS)
 
-// Count trailing zeros in 64-bit value
 #if defined(_MSC_VER)
 #include <intrin.h>
 static inline int ecs_ctz64(uint64_t x)
@@ -189,11 +271,8 @@ static inline void ecs_bs_or_into(ecs_bitset *dst, ecs_bitset *a)
     for (int i = 0; i < ECS_BS_WORDS; i++) dst->words[i] |= a->words[i];
 }
 
-/* ------------------------------- Sparse Set ------------------------------- */
-
-typedef int ecs_entity;
-typedef uint8_t ecs_comp_t;
-typedef int ecs_sys_t;
+// -----------------------------------------------------------------------------
+//  Sparse Set
 
 typedef struct
 {
@@ -278,7 +357,8 @@ static inline int ecs_ss_remove(ecs_sparse_set *set, ecs_entity entity)
     return 1;
 }
 
-/* ----------------------------- Component Pool ----------------------------- */
+// -----------------------------------------------------------------------------
+//  Component Pool
 
 typedef struct ecs_pool
 {
@@ -348,7 +428,8 @@ static inline void *ecs_pool_get(ecs_pool *pool, ecs_entity e)
     return ecs_pool_ptr_at(pool, ecs_ss_index_of(&pool->set, e));
 }
 
-/* ----------------------------- Command Buffer ----------------------------- */
+// -----------------------------------------------------------------------------
+//  Command Buffer
 
 typedef enum
 {
@@ -367,7 +448,7 @@ typedef struct
 
 typedef struct
 {
-    _Alignas(ECS_CACHE_LINE) ecs_cmd *commands;
+    alignas(ECS_CACHE_LINE) ecs_cmd *commands;
     int count;
     int capacity;
 
@@ -376,22 +457,8 @@ typedef struct
     int data_capacity;
 } ecs_cmd_buffer;
 
-/* ---------------------------------- Core ---------------------------------- */
-
-typedef struct ecs_s ecs_t;
-
-// View of matching entities passed to system callbacks
-typedef struct ecs_view
-{
-    ecs_entity *entities;
-    int count;
-    ecs_t *ecs;
-} ecs_view;
-
-typedef int (*ecs_system_fn)(ecs_t *ecs, ecs_view *view, void *udata);
-
-typedef int (*ecs_enqueue_task_fn)(int (*fn)(void *args), void *fn_args, void *udata);
-typedef void (*ecs_wait_tasks_fn)(void *udata);
+// -----------------------------------------------------------------------------
+//  ECS Core
 
 typedef struct
 {
@@ -399,7 +466,7 @@ typedef struct
     ecs_bitset none_of;
     ecs_bitset read;
     ecs_bitset write;
-    ecs_bitset rw; // derived: read | write
+    ecs_bitset rw;
     int phase;
     ecs_system_fn fn;
     void *udata;
@@ -428,7 +495,7 @@ struct ecs_s
 {
     // Entities
     _Atomic(ecs_entity) next_entity;
-    _Atomic(int) free_list_head; // Index of first free slot (-1 == empty)
+    _Atomic(int) free_list_head;
     int *free_list_next;
     int free_list_capacity;
 
@@ -455,7 +522,8 @@ struct ecs_s
     ecs_cmd_buffer cmd_buffers[ECS_MT_MAX_TASKS];
 };
 
-/* ------------------------- Command Buffer Ops ----------------------------- */
+// -----------------------------------------------------------------------------
+//  Command Buffer Implementation
 
 static inline void ecs_cmd_buffer_init(ecs_cmd_buffer *cb, int initial_capacity)
 {
@@ -520,80 +588,15 @@ static inline void ecs_cmd_enqueue(ecs_t *ecs, ecs_cmd *cmd)
     cb->commands[cb->count++] = *cmd;
 }
 
-/* --------------------------- ECS new/free  --------------------------- */
-
-static inline ecs_t *ecs_new(void)
-{
-    ecs_t *ecs = (ecs_t *)malloc(sizeof(ecs_t));
-    assert(ecs);
-
-    memset(ecs, 0, sizeof(*ecs));
-    atomic_store(&ecs->next_entity, 1);
-    atomic_store(&ecs->free_list_head, -1); // Empty
-    ecs->task_count = 1;
-
-    // Allocate free list (grows as needed)
-    ecs->free_list_capacity = 1024;
-    ecs->free_list_next = (int *)malloc((size_t)ecs->free_list_capacity * sizeof(int));
-    assert(ecs->free_list_next);
-
-    // Allocate scratch buffers
-    for (int i = 0; i < ECS_MT_MAX_TASKS; i++) {
-        ecs->task_scratch[i] = (uint8_t *)malloc(ECS_SCRATCH_BUFFER_SIZE);
-        assert(ecs->task_scratch[i]);
-        ecs->task_scratch_capacity[i] = ECS_SCRATCH_BUFFER_SIZE;
-    }
-
-    // Initialize command buffer
-    for (int i = 0; i < ECS_MT_MAX_TASKS; i++) {
-        ecs_cmd_buffer_init(&ecs->cmd_buffers[i], ECS_CMD_BUFFER_CAPACITY);
-    }
-
-    return ecs;
-}
-
-static inline void ecs_free(ecs_t *ecs)
-{
-    if (!ecs) return;
-
-    for (int i = 0; i < ecs->comp_count; i++) ecs_pool_free(&ecs->pools[i]);
-    free(ecs->free_list_next);
-
-    // Free scratch buffers
-    for (int i = 0; i < ECS_MT_MAX_TASKS; i++) { free(ecs->task_scratch[i]); }
-
-    // Free command buffer
-    for (int i = 0; i < ECS_MT_MAX_TASKS; i++) {
-        ecs_cmd_buffer_free(&ecs->cmd_buffers[i]);
-    }
-
-    free(ecs);
-}
-
-static inline void ecs_set_task_callbacks(
-    ecs_t *ecs,
-    ecs_enqueue_task_fn enqueue_cb,
-    ecs_wait_tasks_fn wait_cb,
-    void *task_udata,
-    int task_count
-)
-{
-    ecs->enqueue_cb = enqueue_cb;
-    ecs->wait_cb = wait_cb;
-    ecs->task_udata = task_udata;
-    if (task_count < 1) task_count = 1;
-    if (task_count > ECS_MT_MAX_TASKS) task_count = ECS_MT_MAX_TASKS;
-    ecs->task_count = task_count;
-}
-
-/* ------------------------- Free List Operations --------------------------- */
+// -----------------------------------------------------------------------------
+//  Free List
 
 static inline ecs_entity ecs_free_list_pop(ecs_t *ecs)
 {
     int old_head, new_head;
     do {
         old_head = atomic_load(&ecs->free_list_head);
-        if (old_head == -1) return 0; // Empty
+        if (old_head == -1) return 0;
         new_head = ecs->free_list_next[old_head];
     } while (!atomic_compare_exchange_weak(&ecs->free_list_head, &old_head, new_head));
     return (ecs_entity)old_head;
@@ -608,26 +611,25 @@ static inline void ecs_free_list_push(ecs_t *ecs, ecs_entity entity)
     } while (!atomic_compare_exchange_weak(&ecs->free_list_head, &old_head, (int)entity));
 }
 
-/* -------------------------- Deferred Operations --------------------------- */
+// -----------------------------------------------------------------------------
+//  Deferred Operations
 
 static inline void *ecs_add_deferred(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
 {
     assert(component < ecs->comp_count);
 
-    // Allocate component data from command buffer's data arena
     int element_size = ecs->pools[component].element_size;
     ecs_cmd_buffer *cb = ecs_current_cmd_buffer(ecs);
     void *data = ecs_cmd_alloc_data(cb, (size_t)element_size);
     memset(data, 0, (size_t)element_size);
 
-    // Queue ADD command
     ecs_cmd cmd = { .type = ECS_CMD_ADD,
                     .entity = entity,
                     .component = component,
                     .component_data = data };
     ecs_cmd_enqueue(ecs, &cmd);
 
-    return data; // User initializes this
+    return data;
 }
 
 static inline void ecs_remove_deferred(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
@@ -650,236 +652,10 @@ static inline void ecs_destroy_deferred(ecs_t *ecs, ecs_entity entity)
     ecs_cmd_enqueue(ecs, &cmd);
 }
 
-/* --------------------------------- Entity --------------------------------- */
-
-// Creates an entity. Lock-free via atomic counter and CAS free list.
-// Safe to call from any thread at any time.
-static inline ecs_entity ecs_create(ecs_t *ecs)
-{
-    ecs_entity e = ecs_free_list_pop(ecs);
-    if (e) return e;
-    return atomic_fetch_add(&ecs->next_entity, 1);
-}
-
-static inline void ecs_destroy(ecs_t *ecs, ecs_entity e)
-{
-    if (ecs->in_progress) {
-        ecs_destroy_deferred(ecs, e);
-        return;
-    }
-
-    for (int c = 0; c < ecs->comp_count; c++)
-        (void)ecs_pool_remove(&ecs->pools[c], e);
-
-    // Grow free list if needed
-    if ((int)e >= ecs->free_list_capacity) {
-        int new_cap = ecs->free_list_capacity * 2;
-        while (new_cap <= (int)e) new_cap *= 2;
-        ecs->free_list_next = (int *)
-            realloc(ecs->free_list_next, (size_t)new_cap * sizeof(int));
-        assert(ecs->free_list_next);
-        ecs->free_list_capacity = new_cap;
-    }
-
-    ecs_free_list_push(ecs, e);
-}
-
-/* ------------------------------- Components ------------------------------- */
-
-static inline ecs_comp_t ecs_register_component(ecs_t *ecs, int size)
-{
-    assert(ecs->comp_count < ECS_MAX_COMPONENTS);
-    ecs_comp_t id = (ecs_comp_t)ecs->comp_count++;
-    ecs_pool_init(&ecs->pools[id], size);
-    return id;
-}
-
-#define ECS_COMPONENT(ecs_ptr, Type)                                           \
-    ecs_register_component((ecs_ptr), (int)sizeof(Type))
-
-// Adds a component to an entity. During system execution, the operation is
-// queued and returns a pointer to scratch-allocated memory for initialization.
-// The data is copied to the permanent pool when the command is applied.
-// Thread-safe via per-task command buffers.
-static inline void *ecs_add(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
-{
-    if (ecs->in_progress) return ecs_add_deferred(ecs, entity, component);
-
-    assert(component < ecs->comp_count);
-    return ecs_pool_add(&ecs->pools[component], entity);
-}
-
-// Removes a component from an entity. During system execution, queued and
-// applied at phase boundary. Thread-safe via per-task command buffers.
-static inline void ecs_remove(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
-{
-    if (ecs->in_progress) {
-        ecs_remove_deferred(ecs, entity, component);
-        return;
-    }
-
-    assert(component < ecs->comp_count);
-    (void)ecs_pool_remove(&ecs->pools[component], entity);
-}
-static inline void *ecs_get(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
-{
-    assert(component < ecs->comp_count);
-    return ecs_pool_get(&ecs->pools[component], entity);
-}
-static inline int ecs_has(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
-{
-    assert(component < ecs->comp_count);
-    return ecs_ss_has(&ecs->pools[component].set, entity);
-}
-
-/* -------------------------------- Systems  -------------------------------- */
-
-static inline ecs_sys_t ecs_sys_create(ecs_t *ecs, ecs_system_fn fn, void *udata)
-{
-    assert(ecs->system_count < ECS_MAX_SYSTEMS);
-    assert(fn);
-
-    ecs_sys_t sys = (ecs_sys_t)ecs->system_count++;
-    ecs_system *s = &ecs->systems[sys];
-
-    memset(s, 0, sizeof(*s));
-    s->fn = fn;
-    s->udata = udata;
-    s->enabled = true;
-
-    return sys;
-}
-
-static inline void ecs_sys_require(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
-{
-    assert(sys >= 0 && sys < ecs->system_count);
-    ecs_system *s = &ecs->systems[sys];
-    ecs_bs_set(&s->all_of, comp);
-    ecs_bs_set(&s->read, comp);
-    ecs_bs_set(&s->rw, comp);
-}
-
-static inline void ecs_sys_exclude(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
-{
-    assert(sys >= 0 && sys < ecs->system_count);
-    ecs_bs_set(&ecs->systems[sys].none_of, comp);
-}
-
-static inline void ecs_sys_read(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
-{
-    assert(sys >= 0 && sys < ecs->system_count);
-    ecs_system *s = &ecs->systems[sys];
-    ecs_bs_set(&s->read, comp);
-    ecs_bs_set(&s->rw, comp);
-}
-
-static inline void ecs_sys_write(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
-{
-    assert(sys >= 0 && sys < ecs->system_count);
-    ecs_system *s = &ecs->systems[sys];
-    ecs_bs_set(&s->write, comp);
-    ecs_bs_set(&s->rw, comp);
-}
-
-static inline void ecs_sys_enable(ecs_t *ecs, ecs_sys_t sys)
-{
-    assert(sys >= 0 && sys < ecs->system_count);
-    ecs->systems[sys].enabled = true;
-}
-
-static inline void ecs_sys_disable(ecs_t *ecs, ecs_sys_t sys)
-{
-    assert(sys >= 0 && sys < ecs->system_count);
-    ecs->systems[sys].enabled = false;
-}
-
-static inline void ecs_sys_set_phase(ecs_t *ecs, ecs_sys_t sys, int phase)
-{
-    assert(sys >= 0 && sys < ecs->system_count);
-    ecs->systems[sys].phase = phase;
-}
-
-static inline int ecs_sys_get_phase(ecs_t *ecs, ecs_sys_t sys)
-{
-    assert(sys >= 0 && sys < ecs->system_count);
-    return ecs->systems[sys].phase;
-}
-
-static inline void ecs_sys_set_udata(ecs_t *ecs, ecs_sys_t sys, void *udata)
-{
-    assert(sys >= 0 && sys < ecs->system_count);
-    ecs->systems[sys].udata = udata;
-}
-
-static inline void *ecs_sys_get_udata(ecs_t *ecs, ecs_sys_t sys)
-{
-    assert(sys >= 0 && sys < ecs->system_count);
-    return ecs->systems[sys].udata;
-}
-
-/* ------------------------------- Scheduling ------------------------------- */
-
-static inline int ecs_phase_can_accept(ecs_phase *p, ecs_system *s)
-{
-    // Check for read/write conflicts
-    // write conflicts with (read_union | write_union)
-    ecs_bitset phase_rw;
-    ecs_bs_or(&phase_rw, &p->read_union, &p->write_union);
-
-    if (ecs_bs_intersects(&s->write, &phase_rw)) return 0;
-    ecs_bitset s_rw;
-    ecs_bs_or(&s_rw, &s->read, &s->write);
-    if (ecs_bs_intersects(&p->write_union, &s_rw)) return 0;
-
-    return 1;
-}
-
-static inline void ecs_phase_add_system(ecs_phase *p, int sys_index, ecs_system *s)
-{
-    assert(p->sys_count < ECS_MAX_SYSTEMS);
-    p->sys_idx[p->sys_count++] = sys_index;
-    ecs_bs_or_into(&p->read_union, &s->read);
-    ecs_bs_or_into(&p->write_union, &s->write);
-}
-
-// Greedy, registration-order stable phase building.
-// Systems are placed into phases based on read/write conflict detection
-static inline int ecs_build_phases(ecs_t *ecs, ecs_phase *out_phases, int max_phases)
-{
-    int phase_count = 0;
-    memset(out_phases, 0, (size_t)max_phases * sizeof(*out_phases));
-
-    for (int i = 0; i < ecs->system_count; i++) {
-        ecs_system *s = &ecs->systems[i];
-
-        // Try to place system in earliest compatible phase
-        int placed = 0;
-        for (int p = 0; p < phase_count; p++) {
-            if (ecs_phase_can_accept(&out_phases[p], s)) {
-                ecs_phase_add_system(&out_phases[p], i, s);
-                placed = 1;
-                break;
-            }
-        }
-
-        if (placed) continue;
-
-        // Create new phase for this system
-        assert(phase_count < max_phases);
-        ecs_phase *p = &out_phases[phase_count];
-        assert(ecs_phase_can_accept(p, s));
-        ecs_phase_add_system(p, i, s);
-        phase_count++;
-    }
-
-    return phase_count;
-}
-
 static inline void ecs_sync(ecs_t *ecs)
 {
     assert(!ecs->in_progress);
 
-    // Process all commands (order between tasks is not guaranteed)
     for (int t = 0; t < ecs->task_count; t++) {
         ecs_cmd_buffer *cb = &ecs->cmd_buffers[t];
         for (int i = 0; i < cb->count; i++) {
@@ -909,7 +685,61 @@ static inline void ecs_sync(ecs_t *ecs)
     }
 }
 
-// --------------------------------- Matching / execution ---------------------------------
+// -----------------------------------------------------------------------------
+//  Scheduling
+
+static inline int ecs_phase_can_accept(ecs_phase *p, ecs_system *s)
+{
+    ecs_bitset phase_rw;
+    ecs_bs_or(&phase_rw, &p->read_union, &p->write_union);
+
+    if (ecs_bs_intersects(&s->write, &phase_rw)) return 0;
+    ecs_bitset s_rw;
+    ecs_bs_or(&s_rw, &s->read, &s->write);
+    if (ecs_bs_intersects(&p->write_union, &s_rw)) return 0;
+
+    return 1;
+}
+
+static inline void ecs_phase_add_system(ecs_phase *p, int sys_index, ecs_system *s)
+{
+    assert(p->sys_count < ECS_MAX_SYSTEMS);
+    p->sys_idx[p->sys_count++] = sys_index;
+    ecs_bs_or_into(&p->read_union, &s->read);
+    ecs_bs_or_into(&p->write_union, &s->write);
+}
+
+static inline int ecs_build_phases(ecs_t *ecs, ecs_phase *out_phases, int max_phases)
+{
+    int phase_count = 0;
+    memset(out_phases, 0, (size_t)max_phases * sizeof(*out_phases));
+
+    for (int i = 0; i < ecs->system_count; i++) {
+        ecs_system *s = &ecs->systems[i];
+
+        int placed = 0;
+        for (int p = 0; p < phase_count; p++) {
+            if (ecs_phase_can_accept(&out_phases[p], s)) {
+                ecs_phase_add_system(&out_phases[p], i, s);
+                placed = 1;
+                break;
+            }
+        }
+
+        if (placed) continue;
+
+        assert(phase_count < max_phases);
+        ecs_phase *p = &out_phases[phase_count];
+        assert(ecs_phase_can_accept(p, s));
+        ecs_phase_add_system(p, i, s);
+        phase_count++;
+    }
+
+    return phase_count;
+}
+
+// -----------------------------------------------------------------------------
+//  Matching
 
 static inline int ecs_entity_has_all_of(ecs_t *ecs, ecs_entity e, ecs_bitset *all_of)
 {
@@ -970,7 +800,6 @@ static inline int ecs_run_system_task(void *args_v)
     int ret = 0;
     ecs_set_tls_task_index(args->task_index);
 
-    // Pick smallest pool to drive iteration
     ecs_comp_t drive = ecs_pick_driver(ecs, &s->all_of);
     if (drive == (ecs_comp_t)-1) { goto done; }
 
@@ -978,14 +807,12 @@ static inline int ecs_run_system_task(void *args_v)
     int entity_count = set->count;
     if (!entity_count) { goto done; }
 
-    // Calculate this task's slice
     int task_count = ecs->task_count;
     int task_idx = args->task_index;
     int start = (entity_count * task_idx) / task_count;
     int end = (entity_count * (task_idx + 1)) / task_count;
     int slice_count = end - start;
 
-    // Ensure scratch buffer is large enough for matched entity array
     int needed = slice_count * sizeof(ecs_entity);
     if (needed > args->scratch_capacity) {
         int new_capacity = needed * 2;
@@ -997,7 +824,6 @@ static inline int ecs_run_system_task(void *args_v)
         ecs->task_scratch_capacity[args->task_index] = new_capacity;
     }
 
-    // Collect matched entities into scratch buffer
     ecs_entity *matched = (ecs_entity *)args->scratch_buffer;
     int matched_count = 0;
 
@@ -1021,7 +847,220 @@ done:
     return ret;
 }
 
-static inline int ecs_run_system(ecs_t *ecs, ecs_sys_t sys, float dt)
+// -----------------------------------------------------------------------------
+//  Public API Implementation
+
+ecs_t *ecs_new()
+{
+    ecs_t *ecs = (ecs_t *)malloc(sizeof(ecs_t));
+    assert(ecs);
+
+    memset(ecs, 0, sizeof(*ecs));
+    atomic_store(&ecs->next_entity, 1);
+    atomic_store(&ecs->free_list_head, -1);
+    ecs->task_count = 1;
+
+    ecs->free_list_capacity = 1024;
+    ecs->free_list_next = (int *)malloc((size_t)ecs->free_list_capacity * sizeof(int));
+    assert(ecs->free_list_next);
+
+    for (int i = 0; i < ECS_MT_MAX_TASKS; i++) {
+        ecs->task_scratch[i] = (uint8_t *)malloc(ECS_SCRATCH_BUFFER_SIZE);
+        assert(ecs->task_scratch[i]);
+        ecs->task_scratch_capacity[i] = ECS_SCRATCH_BUFFER_SIZE;
+    }
+
+    for (int i = 0; i < ECS_MT_MAX_TASKS; i++) {
+        ecs_cmd_buffer_init(&ecs->cmd_buffers[i], ECS_CMD_BUFFER_CAPACITY);
+    }
+
+    return ecs;
+}
+
+void ecs_free(ecs_t *ecs)
+{
+    if (!ecs) return;
+
+    for (int i = 0; i < ecs->comp_count; i++) ecs_pool_free(&ecs->pools[i]);
+    free(ecs->free_list_next);
+
+    for (int i = 0; i < ECS_MT_MAX_TASKS; i++) { free(ecs->task_scratch[i]); }
+
+    for (int i = 0; i < ECS_MT_MAX_TASKS; i++) {
+        ecs_cmd_buffer_free(&ecs->cmd_buffers[i]);
+    }
+
+    free(ecs);
+}
+
+void ecs_set_task_callbacks(
+    ecs_t *ecs,
+    ecs_enqueue_task_fn enqueue_cb,
+    ecs_wait_tasks_fn wait_cb,
+    void *task_udata,
+    int task_count
+)
+{
+    ecs->enqueue_cb = enqueue_cb;
+    ecs->wait_cb = wait_cb;
+    ecs->task_udata = task_udata;
+    if (task_count < 1) task_count = 1;
+    if (task_count > ECS_MT_MAX_TASKS) task_count = ECS_MT_MAX_TASKS;
+    ecs->task_count = task_count;
+}
+
+ecs_entity ecs_create(ecs_t *ecs)
+{
+    ecs_entity e = ecs_free_list_pop(ecs);
+    if (e) return e;
+    return atomic_fetch_add(&ecs->next_entity, 1);
+}
+
+void ecs_destroy(ecs_t *ecs, ecs_entity e)
+{
+    if (ecs->in_progress) {
+        ecs_destroy_deferred(ecs, e);
+        return;
+    }
+
+    for (int c = 0; c < ecs->comp_count; c++)
+        (void)ecs_pool_remove(&ecs->pools[c], e);
+
+    if ((int)e >= ecs->free_list_capacity) {
+        int new_cap = ecs->free_list_capacity * 2;
+        while (new_cap <= (int)e) new_cap *= 2;
+        ecs->free_list_next = (int *)
+            realloc(ecs->free_list_next, (size_t)new_cap * sizeof(int));
+        assert(ecs->free_list_next);
+        ecs->free_list_capacity = new_cap;
+    }
+
+    ecs_free_list_push(ecs, e);
+}
+
+ecs_comp_t ecs_register_component(ecs_t *ecs, int size)
+{
+    assert(ecs->comp_count < ECS_MAX_COMPONENTS);
+    ecs_comp_t id = (ecs_comp_t)ecs->comp_count++;
+    ecs_pool_init(&ecs->pools[id], size);
+    return id;
+}
+
+void *ecs_add(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
+{
+    if (ecs->in_progress) return ecs_add_deferred(ecs, entity, component);
+
+    assert(component < ecs->comp_count);
+    return ecs_pool_add(&ecs->pools[component], entity);
+}
+
+void ecs_remove(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
+{
+    if (ecs->in_progress) {
+        ecs_remove_deferred(ecs, entity, component);
+        return;
+    }
+
+    assert(component < ecs->comp_count);
+    (void)ecs_pool_remove(&ecs->pools[component], entity);
+}
+
+void *ecs_get(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
+{
+    assert(component < ecs->comp_count);
+    return ecs_pool_get(&ecs->pools[component], entity);
+}
+
+int ecs_has(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
+{
+    assert(component < ecs->comp_count);
+    return ecs_ss_has(&ecs->pools[component].set, entity);
+}
+
+ecs_sys_t ecs_sys_create(ecs_t *ecs, ecs_system_fn fn, void *udata)
+{
+    assert(ecs->system_count < ECS_MAX_SYSTEMS);
+    assert(fn);
+
+    ecs_sys_t sys = (ecs_sys_t)ecs->system_count++;
+    ecs_system *s = &ecs->systems[sys];
+
+    memset(s, 0, sizeof(*s));
+    s->fn = fn;
+    s->udata = udata;
+    s->enabled = true;
+
+    return sys;
+}
+
+void ecs_sys_require(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
+{
+    assert(sys >= 0 && sys < ecs->system_count);
+    ecs_system *s = &ecs->systems[sys];
+    ecs_bs_set(&s->all_of, comp);
+    ecs_bs_set(&s->read, comp);
+    ecs_bs_set(&s->rw, comp);
+}
+
+void ecs_sys_exclude(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
+{
+    assert(sys >= 0 && sys < ecs->system_count);
+    ecs_bs_set(&ecs->systems[sys].none_of, comp);
+}
+
+void ecs_sys_read(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
+{
+    assert(sys >= 0 && sys < ecs->system_count);
+    ecs_system *s = &ecs->systems[sys];
+    ecs_bs_set(&s->read, comp);
+    ecs_bs_set(&s->rw, comp);
+}
+
+void ecs_sys_write(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
+{
+    assert(sys >= 0 && sys < ecs->system_count);
+    ecs_system *s = &ecs->systems[sys];
+    ecs_bs_set(&s->write, comp);
+    ecs_bs_set(&s->rw, comp);
+}
+
+void ecs_sys_enable(ecs_t *ecs, ecs_sys_t sys)
+{
+    assert(sys >= 0 && sys < ecs->system_count);
+    ecs->systems[sys].enabled = true;
+}
+
+void ecs_sys_disable(ecs_t *ecs, ecs_sys_t sys)
+{
+    assert(sys >= 0 && sys < ecs->system_count);
+    ecs->systems[sys].enabled = false;
+}
+
+void ecs_sys_set_phase(ecs_t *ecs, ecs_sys_t sys, int phase)
+{
+    assert(sys >= 0 && sys < ecs->system_count);
+    ecs->systems[sys].phase = phase;
+}
+
+int ecs_sys_get_phase(ecs_t *ecs, ecs_sys_t sys)
+{
+    assert(sys >= 0 && sys < ecs->system_count);
+    return ecs->systems[sys].phase;
+}
+
+void ecs_sys_set_udata(ecs_t *ecs, ecs_sys_t sys, void *udata)
+{
+    assert(sys >= 0 && sys < ecs->system_count);
+    ecs->systems[sys].udata = udata;
+}
+
+void *ecs_sys_get_udata(ecs_t *ecs, ecs_sys_t sys)
+{
+    assert(sys >= 0 && sys < ecs->system_count);
+    return ecs->systems[sys].udata;
+}
+
+int ecs_run_system(ecs_t *ecs, ecs_sys_t sys, float dt)
 {
     (void)dt;
     assert(sys >= 0 && sys < ecs->system_count);
@@ -1067,7 +1106,7 @@ done:
     return ret;
 }
 
-static inline int ecs_progress(ecs_t *ecs, int phase_mask)
+int ecs_progress(ecs_t *ecs, int phase_mask)
 {
     ecs->in_progress = 1;
 
@@ -1084,13 +1123,10 @@ static inline int ecs_progress(ecs_t *ecs, int phase_mask)
             int sys_index = ph->sys_idx[i];
             ecs_system *s = &ecs->systems[sys_index];
 
-            // Skip disabled systems
             if (!s->enabled) continue;
 
-            // Filter by phase mask
-            int matches = (phase_mask == 0)
-                            ? (s->phase == 0) // phase_mask=0: only phase 0
-                            : (s->phase & phase_mask); // else: bitwise test
+            int matches = (phase_mask == 0) ? (s->phase == 0)
+                                            : (s->phase & phase_mask);
 
             if (!matches) continue;
 
@@ -1124,17 +1160,15 @@ static inline int ecs_progress(ecs_t *ecs, int phase_mask)
             ecs->wait_cb(ecs->task_udata);
         }
 
-        // Apply deferred commands between phases
         ecs->in_progress = 0;
         ecs_sync(ecs);
         ecs->in_progress = 1;
     }
 
 done:
-    // Apply any remaining commands after all phases complete
     ecs->in_progress = 0;
     ecs_sync(ecs);
     return ret;
 }
 
-#endif // BRUTAL_ECS_H
+#endif // BRUTAL_ECS_IMPLEMENTATION

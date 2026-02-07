@@ -5,11 +5,11 @@
 #include <assert.h>
 #include <stdio.h>
 
-extern void ecs_suite(void);
-extern void tpool_suite(void);
-extern void dyna_suite(void);
+extern void ecs_suite();
+extern void tpool_suite();
+extern void dyna_suite();
 
-int main(void)
+int main()
 {
     pu_display_colors(true);
 

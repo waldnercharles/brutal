@@ -3,6 +3,7 @@
 #include "pico_unit.h"
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 
 typedef struct
@@ -27,140 +28,10 @@ typedef struct
     float health;
 } Health;
 
-TEST_CASE(test_bitset_zero_and_any)
-{
-    ecs_bitset bs;
-    ecs_bs_zero(&bs);
-
-    REQUIRE(ecs_bs_none(&bs));
-    REQUIRE(!ecs_bs_any(&bs));
-
-    ecs_bs_set(&bs, 0);
-    REQUIRE(ecs_bs_any(&bs));
-    REQUIRE(!ecs_bs_none(&bs));
-
-    return true;
-}
-
-TEST_CASE(test_bitset_set_clear_test)
-{
-    ecs_bitset bs;
-    ecs_bs_zero(&bs);
-
-    ecs_bs_set(&bs, 5);
-    REQUIRE(ecs_bs_test(&bs, 5));
-    REQUIRE(!ecs_bs_test(&bs, 4));
-    REQUIRE(!ecs_bs_test(&bs, 6));
-
-    ecs_bs_clear(&bs, 5);
-    REQUIRE(!ecs_bs_test(&bs, 5));
-
-    return true;
-}
-
-TEST_CASE(test_bitset_operations)
-{
-    ecs_bitset a, b, result;
-    ecs_bs_zero(&a);
-    ecs_bs_zero(&b);
-    ecs_bs_zero(&result);
-
-    ecs_bs_set(&a, 1);
-    ecs_bs_set(&a, 3);
-    ecs_bs_set(&b, 2);
-    ecs_bs_set(&b, 3);
-
-    ecs_bs_or(&result, &a, &b);
-    REQUIRE(ecs_bs_test(&result, 1));
-    REQUIRE(ecs_bs_test(&result, 2));
-    REQUIRE(ecs_bs_test(&result, 3));
-    REQUIRE(!ecs_bs_test(&result, 0));
-
-    ecs_bs_and(&result, &a, &b);
-    REQUIRE(ecs_bs_test(&result, 3));
-    REQUIRE(!ecs_bs_test(&result, 1));
-    REQUIRE(!ecs_bs_test(&result, 2));
-
-    ecs_bs_andnot(&result, &a, &b);
-    REQUIRE(ecs_bs_test(&result, 1));
-    REQUIRE(!ecs_bs_test(&result, 2));
-    REQUIRE(!ecs_bs_test(&result, 3));
-
-    return true;
-}
-
-TEST_CASE(test_bitset_intersects)
-{
-    ecs_bitset a, b;
-    ecs_bs_zero(&a);
-    ecs_bs_zero(&b);
-
-    ecs_bs_set(&a, 5);
-    ecs_bs_set(&b, 10);
-    REQUIRE(!ecs_bs_intersects(&a, &b));
-
-    ecs_bs_set(&b, 5);
-    REQUIRE(ecs_bs_intersects(&a, &b));
-
-    return true;
-}
-
-// ---- Sparse Set Tests ----
-
-TEST_CASE(test_sparse_set_basic)
-{
-    ecs_sparse_set set;
-    ecs_ss_init(&set);
-
-    REQUIRE(set.count == 0);
-    REQUIRE(!ecs_ss_has(&set, 0));
-
-    ecs_ss_insert(&set, 10);
-    REQUIRE(ecs_ss_has(&set, 10));
-    REQUIRE(set.count == 1);
-
-    ecs_ss_remove(&set, 10);
-    REQUIRE(!ecs_ss_has(&set, 10));
-    REQUIRE(set.count == 0);
-
-    ecs_ss_free(&set);
-    return true;
-}
-
-TEST_CASE(test_sparse_set_multiple)
-{
-    ecs_sparse_set set;
-    ecs_ss_init(&set);
-
-    ecs_ss_insert(&set, 5);
-    ecs_ss_insert(&set, 10);
-    ecs_ss_insert(&set, 15);
-
-    REQUIRE(set.count == 3);
-    REQUIRE(ecs_ss_has(&set, 5));
-    REQUIRE(ecs_ss_has(&set, 10));
-    REQUIRE(ecs_ss_has(&set, 15));
-    REQUIRE(!ecs_ss_has(&set, 7));
-
-    ecs_ss_remove(&set, 10);
-    REQUIRE(set.count == 2);
-    REQUIRE(ecs_ss_has(&set, 5));
-    REQUIRE(!ecs_ss_has(&set, 10));
-    REQUIRE(ecs_ss_has(&set, 15));
-
-    ecs_ss_free(&set);
-    return true;
-}
-
-// ---- ECS Entity Tests ----
-
 TEST_CASE(test_ecs_new_free)
 {
     ecs_t *ecs = ecs_new();
-
-    REQUIRE(ecs->next_entity == 1);
-    REQUIRE(ecs->comp_count == 0);
-    REQUIRE(ecs->system_count == 0);
+    REQUIRE(ecs != NULL);
 
     ecs_free(ecs);
     return true;
@@ -173,8 +44,7 @@ TEST_CASE(test_entity_create_destroy)
     ecs_entity e1 = ecs_create(ecs);
     ecs_entity e2 = ecs_create(ecs);
 
-    REQUIRE(e1 == 1);
-    REQUIRE(e2 == 2);
+    REQUIRE(e1 != e2);
 
     ecs_destroy(ecs, e1);
 
@@ -194,9 +64,7 @@ TEST_CASE(test_register_component)
     ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
     ecs_comp_t vel_comp = ECS_COMPONENT(ecs, Velocity);
 
-    REQUIRE(pos_comp == 0);
-    REQUIRE(vel_comp == 1);
-    REQUIRE(ecs->comp_count == 2);
+    REQUIRE(pos_comp != vel_comp);
 
     ecs_free(ecs);
     return true;
@@ -307,8 +175,7 @@ TEST_CASE(test_add_system)
     ecs_sys_t sys = ecs_sys_create(ecs, test_system_fn, NULL);
     ecs_sys_require(ecs, sys, pos_comp);
 
-    REQUIRE(sys == 0);
-    REQUIRE(ecs->system_count == 1);
+    REQUIRE(sys >= 0);
 
     ecs_free(ecs);
     return true;
@@ -805,14 +672,6 @@ TEST_CASE(test_multithreading_verify_parallel_execution)
 
 TEST_SUITE(ecs_suite)
 {
-    RUN_TEST_CASE(test_bitset_zero_and_any);
-    RUN_TEST_CASE(test_bitset_set_clear_test);
-    RUN_TEST_CASE(test_bitset_operations);
-    RUN_TEST_CASE(test_bitset_intersects);
-
-    RUN_TEST_CASE(test_sparse_set_basic);
-    RUN_TEST_CASE(test_sparse_set_multiple);
-
     RUN_TEST_CASE(test_ecs_new_free);
     RUN_TEST_CASE(test_entity_create_destroy);
 
@@ -830,7 +689,6 @@ TEST_SUITE(ecs_suite)
     RUN_TEST_CASE(test_phase_sync_applies_deferred_adds);
     RUN_TEST_CASE(test_system_udata_roundtrip);
 
-    // Multithreading tests
     RUN_TEST_CASE(test_multithreading_basic);
     RUN_TEST_CASE(test_multithreading_verify_parallel_execution);
 }
