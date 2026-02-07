@@ -66,16 +66,6 @@ TEST_CASE(test_pool_basic_submit_and_wait)
     return true;
 }
 
-TEST_CASE(test_pool_submit_null_fn)
-{
-    tpool_t *tp = tpool_new(2, 0);
-
-    tpool_enqueue(tp, NULL, NULL);
-
-    tpool_destroy(tp);
-    return true;
-}
-
 TEST_CASE(test_pool_single_thread)
 {
     tpool_t *tp = tpool_new(1, 0);
@@ -227,12 +217,6 @@ TEST_CASE(test_pool_init_zero_threads_clamped)
     return true;
 }
 
-TEST_CASE(test_pool_destroy_null_is_safe)
-{
-    tpool_destroy(NULL);
-    return true;
-}
-
 TEST_CASE(test_pool_inline_execution_on_full_queue)
 {
     // Tiny queue: 4 slots, 2 workers. Submit 32 jobs.
@@ -285,7 +269,6 @@ TEST_CASE(test_pool_wait_steals_work)
 TEST_SUITE(tpool_suite)
 {
     RUN_TEST_CASE(test_pool_basic_submit_and_wait);
-    RUN_TEST_CASE(test_pool_submit_null_fn);
     RUN_TEST_CASE(test_pool_single_thread);
     RUN_TEST_CASE(test_pool_destroy_drains_work);
     RUN_TEST_CASE(test_pool_multiple_wait_cycles);
@@ -294,7 +277,6 @@ TEST_SUITE(tpool_suite)
     RUN_TEST_CASE(test_pool_high_contention);
     RUN_TEST_CASE(test_pool_concurrent_submitters);
     RUN_TEST_CASE(test_pool_init_zero_threads_clamped);
-    RUN_TEST_CASE(test_pool_destroy_null_is_safe);
     RUN_TEST_CASE(test_pool_inline_execution_on_full_queue);
     RUN_TEST_CASE(test_pool_wait_steals_work);
 }

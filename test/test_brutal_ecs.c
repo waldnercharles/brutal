@@ -246,8 +246,6 @@ TEST_CASE(test_system_with_query)
     ecs_sys_t sys = ecs_sys_create(ecs, velocity_system_fn, NULL);
     ecs_sys_require(ecs, sys, pos_comp);
     ecs_sys_require(ecs, sys, vel_comp);
-    ecs_sys_read(ecs, sys, vel_comp);
-    ecs_sys_write(ecs, sys, pos_comp);
 
     ecs_progress(ecs, 0);
 
@@ -286,35 +284,35 @@ TEST_CASE(test_system_none_of_filter)
     return true;
 }
 
-static int phase_a_counter = 0;
-static int phase_b_counter = 0;
-static int phase_default_counter = 0;
+static int group_a_counter = 0;
+static int group_b_counter = 0;
+static int group_default_counter = 0;
 
-static int phase_a_system(ecs_t *ecs, ecs_view *view, void *udata)
+static int group_a_system(ecs_t *ecs, ecs_view *view, void *udata)
 {
     (void)ecs;
     (void)udata;
-    phase_a_counter += view->count;
+    group_a_counter += view->count;
     return 0;
 }
 
-static int phase_b_system(ecs_t *ecs, ecs_view *view, void *udata)
+static int group_b_system(ecs_t *ecs, ecs_view *view, void *udata)
 {
     (void)ecs;
     (void)udata;
-    phase_b_counter += view->count;
+    group_b_counter += view->count;
     return 0;
 }
 
-static int phase_default_system(ecs_t *ecs, ecs_view *view, void *udata)
+static int group_default_system(ecs_t *ecs, ecs_view *view, void *udata)
 {
     (void)ecs;
     (void)udata;
-    phase_default_counter += view->count;
+    group_default_counter += view->count;
     return 0;
 }
 
-TEST_CASE(test_selective_phase_execution)
+TEST_CASE(test_selective_group_execution)
 {
     ecs_t *ecs = ecs_new();
 
@@ -326,72 +324,72 @@ TEST_CASE(test_selective_phase_execution)
         ecs_add(ecs, e, pos_comp);
     }
 
-// Define phase constants
-#define PHASE_A 1
-#define PHASE_B 2
+// Define group constants
+#define GROUP_A 1
+#define GROUP_B 2
 
-    // Register systems in different phases
-    ecs_sys_t sys_a = ecs_sys_create(ecs, phase_a_system, NULL);
+    // Register systems in different groups
+    ecs_sys_t sys_a = ecs_sys_create(ecs, group_a_system, NULL);
     ecs_sys_require(ecs, sys_a, pos_comp);
-    ecs_sys_set_phase(ecs, sys_a, PHASE_A);
+    ecs_sys_set_group(ecs, sys_a, GROUP_A);
 
-    ecs_sys_t sys_b = ecs_sys_create(ecs, phase_b_system, NULL);
+    ecs_sys_t sys_b = ecs_sys_create(ecs, group_b_system, NULL);
     ecs_sys_require(ecs, sys_b, pos_comp);
-    ecs_sys_set_phase(ecs, sys_b, PHASE_B);
+    ecs_sys_set_group(ecs, sys_b, GROUP_B);
 
-    ecs_sys_t sys_default = ecs_sys_create(ecs, phase_default_system, NULL);
+    ecs_sys_t sys_default = ecs_sys_create(ecs, group_default_system, NULL);
     ecs_sys_require(ecs, sys_default, pos_comp);
-    // phase=0 is default, no need to set
+    // group=0 is default, no need to set
 
     // Reset counters
-    phase_a_counter = 0;
-    phase_b_counter = 0;
-    phase_default_counter = 0;
+    group_a_counter = 0;
+    group_b_counter = 0;
+    group_default_counter = 0;
 
-    // Test 1: Run only phase A
-    ecs_progress(ecs, PHASE_A);
-    REQUIRE(phase_a_counter == 10);
-    REQUIRE(phase_b_counter == 0);
-    REQUIRE(phase_default_counter == 0);
-
-    // Reset counters
-    phase_a_counter = 0;
-    phase_b_counter = 0;
-    phase_default_counter = 0;
-
-    // Test 2: Run only phase B
-    ecs_progress(ecs, PHASE_B);
-    REQUIRE(phase_a_counter == 0);
-    REQUIRE(phase_b_counter == 10);
-    REQUIRE(phase_default_counter == 0);
+    // Test 1: Run only group A
+    ecs_progress(ecs, GROUP_A);
+    REQUIRE(group_a_counter == 10);
+    REQUIRE(group_b_counter == 0);
+    REQUIRE(group_default_counter == 0);
 
     // Reset counters
-    phase_a_counter = 0;
-    phase_b_counter = 0;
-    phase_default_counter = 0;
+    group_a_counter = 0;
+    group_b_counter = 0;
+    group_default_counter = 0;
 
-    // Test 3: Run both phases A and B
-    ecs_progress(ecs, PHASE_A | PHASE_B);
-    REQUIRE(phase_a_counter == 10);
-    REQUIRE(phase_b_counter == 10);
-    REQUIRE(phase_default_counter == 0);
+    // Test 2: Run only group B
+    ecs_progress(ecs, GROUP_B);
+    REQUIRE(group_a_counter == 0);
+    REQUIRE(group_b_counter == 10);
+    REQUIRE(group_default_counter == 0);
 
     // Reset counters
-    phase_a_counter = 0;
-    phase_b_counter = 0;
-    phase_default_counter = 0;
+    group_a_counter = 0;
+    group_b_counter = 0;
+    group_default_counter = 0;
 
-    // Test 4: Run default phase only
+    // Test 3: Run both groups A and B
+    ecs_progress(ecs, GROUP_A | GROUP_B);
+    REQUIRE(group_a_counter == 10);
+    REQUIRE(group_b_counter == 10);
+    REQUIRE(group_default_counter == 0);
+
+    // Reset counters
+    group_a_counter = 0;
+    group_b_counter = 0;
+    group_default_counter = 0;
+
+    // Test 4: Run default group only
     ecs_progress(ecs, 0);
-    REQUIRE(phase_a_counter == 0);
-    REQUIRE(phase_b_counter == 0);
-    REQUIRE(phase_default_counter == 10);
+    REQUIRE(group_a_counter == 0);
+    REQUIRE(group_b_counter == 0);
+    REQUIRE(group_default_counter == 10);
 
     ecs_free(ecs);
     return true;
 
-#undef PHASE_A
-#undef PHASE_B
+#undef GROUP_A
+#undef GROUP_B
 }
 
 typedef struct
@@ -437,7 +435,7 @@ static int consume_velocity_system(ecs_t *ecs, ecs_view *view, void *udata)
     return 0;
 }
 
-TEST_CASE(test_phase_sync_applies_deferred_adds)
+TEST_CASE(test_stage_sync_applies_deferred_adds)
 {
     ecs_t *ecs = ecs_new();
 
@@ -457,12 +455,10 @@ TEST_CASE(test_phase_sync_applies_deferred_adds)
     ecs_sys_t add_sys = ecs_sys_create(ecs, add_velocity_system, &add_state);
     ecs_sys_require(ecs, add_sys, pos_comp);
     ecs_sys_exclude(ecs, add_sys, vel_comp);
-    ecs_sys_write(ecs, add_sys, vel_comp);
 
     ecs_sys_t consume_sys = ecs_sys_create(ecs, consume_velocity_system, &consume_state);
     ecs_sys_require(ecs, consume_sys, pos_comp);
     ecs_sys_require(ecs, consume_sys, vel_comp);
-    ecs_sys_read(ecs, consume_sys, vel_comp);
 
     ecs_progress(ecs, 0);
     REQUIRE(add_state.added == 8);
@@ -589,8 +585,7 @@ TEST_CASE(test_multithreading_basic)
     ecs_sys_t sys = ecs_sys_create(ecs, mt_move_system, NULL);
     ecs_sys_require(ecs, sys, pos_comp);
     ecs_sys_require(ecs, sys, vel_comp);
-    ecs_sys_write(ecs, sys, pos_comp);
-    ecs_sys_read(ecs, sys, vel_comp);
+    ecs_sys_set_parallel(ecs, sys, true);
 
     // Reset counters
     atomic_store(&mt_system_calls, 0);
@@ -642,8 +637,7 @@ TEST_CASE(test_multithreading_verify_parallel_execution)
     ecs_sys_t sys = ecs_sys_create(ecs, mt_move_system, NULL);
     ecs_sys_require(ecs, sys, pos_comp);
     ecs_sys_require(ecs, sys, vel_comp);
-    ecs_sys_write(ecs, sys, pos_comp);
-    ecs_sys_read(ecs, sys, vel_comp);
+    ecs_sys_set_parallel(ecs, sys, true);
 
     atomic_store(&mt_system_calls, 0);
     atomic_store(&mt_entity_count, 0);
@@ -660,6 +654,205 @@ TEST_CASE(test_multithreading_verify_parallel_execution)
 
     int second_entities = atomic_load(&mt_entity_count);
     REQUIRE(second_entities == NUM_ENTITIES);
+
+    ecs_free(ecs);
+    tpool_destroy(g_tpool);
+    g_tpool = NULL;
+
+    return true;
+}
+
+// ---- Hybrid System+Entity Parallelism Tests ----
+
+static _Atomic int mt_sys1_calls = 0;
+static _Atomic int mt_sys2_calls = 0;
+static _Atomic int mt_sys1_entities = 0;
+static _Atomic int mt_sys2_entities = 0;
+
+static int mt_independent_sys1(ecs_t *ecs, ecs_view *view, void *udata)
+{
+    (void)ecs;
+    (void)udata;
+    atomic_fetch_add(&mt_sys1_calls, 1);
+    atomic_fetch_add(&mt_sys1_entities, view->count);
+    return 0;
+}
+
+static int mt_independent_sys2(ecs_t *ecs, ecs_view *view, void *udata)
+{
+    (void)ecs;
+    (void)udata;
+    atomic_fetch_add(&mt_sys2_calls, 1);
+    atomic_fetch_add(&mt_sys2_entities, view->count);
+    return 0;
+}
+
+TEST_CASE(test_mt_independent_systems_parallel)
+{
+    const int NUM_THREADS = 4;
+    const int NUM_ENTITIES = 1000;
+
+    g_tpool = tpool_new(NUM_THREADS, 0);
+    REQUIRE(g_tpool != NULL);
+
+    ecs_t *ecs = ecs_new();
+    ecs_set_task_callbacks(ecs, tpool_enqueue_adapter, tpool_wait_adapter, NULL, NUM_THREADS);
+
+    ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
+
+    for (int i = 0; i < NUM_ENTITIES; i++) {
+        ecs_entity e = ecs_create(ecs);
+        ecs_add(ecs, e, pos_comp);
+    }
+
+    // Two read-only systems
+    ecs_sys_t sys1 = ecs_sys_create(ecs, mt_independent_sys1, NULL);
+    ecs_sys_require(ecs, sys1, pos_comp);
+    ecs_sys_set_parallel(ecs, sys1, true);
+
+    ecs_sys_t sys2 = ecs_sys_create(ecs, mt_independent_sys2, NULL);
+    ecs_sys_require(ecs, sys2, pos_comp);
+    ecs_sys_set_parallel(ecs, sys2, true);
+
+    atomic_store(&mt_sys1_calls, 0);
+    atomic_store(&mt_sys2_calls, 0);
+    atomic_store(&mt_sys1_entities, 0);
+    atomic_store(&mt_sys2_entities, 0);
+
+    ecs_progress(ecs, 0);
+
+    // Both systems should see all entities
+    int sys1_entities = atomic_load(&mt_sys1_entities);
+    int sys2_entities = atomic_load(&mt_sys2_entities);
+    REQUIRE(sys1_entities == NUM_ENTITIES);
+    REQUIRE(sys2_entities == NUM_ENTITIES);
+
+    // Both systems should run (may be called multiple times due to entity slicing)
+    int sys1_calls = atomic_load(&mt_sys1_calls);
+    int sys2_calls = atomic_load(&mt_sys2_calls);
+    REQUIRE(sys1_calls > 0);
+    REQUIRE(sys2_calls > 0);
+
+    ecs_free(ecs);
+    tpool_destroy(g_tpool);
+    g_tpool = NULL;
+
+    return true;
+}
+
+static _Atomic int mt_writer_ran = 0;
+static _Atomic int mt_reader_saw_adds = 0;
+
+static int mt_writer_system(ecs_t *ecs, ecs_view *view, void *udata)
+{
+    ecs_comp_t *vel_comp = (ecs_comp_t *)udata;
+    for (int i = 0; i < view->count; i++) {
+        ecs_entity e = view->entities[i];
+        ecs_add(ecs, e, *vel_comp);
+    }
+    atomic_store(&mt_writer_ran, 1);
+    return 0;
+}
+
+static int mt_reader_system(ecs_t *ecs, ecs_view *view, void *udata)
+{
+    (void)ecs;
+    (void)udata;
+    if (view->count > 0) {
+        atomic_store(&mt_reader_saw_adds, 1);
+    }
+    return 0;
+}
+
+TEST_CASE(test_mt_conflicting_systems_staged)
+{
+    const int NUM_THREADS = 4;
+    const int NUM_ENTITIES = 100;
+
+    g_tpool = tpool_new(NUM_THREADS, 0);
+    REQUIRE(g_tpool != NULL);
+
+    ecs_t *ecs = ecs_new();
+    ecs_set_task_callbacks(ecs, tpool_enqueue_adapter, tpool_wait_adapter, NULL, NUM_THREADS);
+
+    ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
+    ecs_comp_t vel_comp = ECS_COMPONENT(ecs, Velocity);
+
+    for (int i = 0; i < NUM_ENTITIES; i++) {
+        ecs_entity e = ecs_create(ecs);
+        ecs_add(ecs, e, pos_comp);
+    }
+
+    // Writer system adds vel_comp (writes to structural data)
+    ecs_sys_t writer = ecs_sys_create(ecs, mt_writer_system, &vel_comp);
+    ecs_sys_require(ecs, writer, pos_comp);
+    ecs_sys_set_parallel(ecs, writer, true);
+
+    // Reader system requires vel_comp
+    ecs_sys_t reader = ecs_sys_create(ecs, mt_reader_system, NULL);
+    ecs_sys_require(ecs, reader, vel_comp);
+    ecs_sys_set_parallel(ecs, reader, true);
+
+    atomic_store(&mt_writer_ran, 0);
+    atomic_store(&mt_reader_saw_adds, 0);
+
+    ecs_progress(ecs, 0);
+
+    // Writer should run
+    REQUIRE(atomic_load(&mt_writer_ran) == 1);
+    // Reader should see the deferred adds after stage sync
+    REQUIRE(atomic_load(&mt_reader_saw_adds) == 1);
+
+    ecs_free(ecs);
+    tpool_destroy(g_tpool);
+    g_tpool = NULL;
+
+    return true;
+}
+
+static _Atomic int mt_many_systems_total = 0;
+
+static int mt_many_reader_system(ecs_t *ecs, ecs_view *view, void *udata)
+{
+    (void)ecs;
+    (void)udata;
+    atomic_fetch_add(&mt_many_systems_total, view->count);
+    return 0;
+}
+
+TEST_CASE(test_mt_many_systems_batching)
+{
+    const int NUM_THREADS = 4;
+    const int NUM_SYSTEMS = 20;
+    const int NUM_ENTITIES = 100;
+
+    g_tpool = tpool_new(NUM_THREADS, 0);
+    REQUIRE(g_tpool != NULL);
+
+    ecs_t *ecs = ecs_new();
+    ecs_set_task_callbacks(ecs, tpool_enqueue_adapter, tpool_wait_adapter, NULL, NUM_THREADS);
+
+    ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
+
+    for (int i = 0; i < NUM_ENTITIES; i++) {
+        ecs_entity e = ecs_create(ecs);
+        ecs_add(ecs, e, pos_comp);
+    }
+
+    // Create many read-only systems
+    for (int i = 0; i < NUM_SYSTEMS; i++) {
+        ecs_sys_t sys = ecs_sys_create(ecs, mt_many_reader_system, NULL);
+        ecs_sys_require(ecs, sys, pos_comp);
+        ecs_sys_set_parallel(ecs, sys, true);
+    }
+
+    atomic_store(&mt_many_systems_total, 0);
+
+    ecs_progress(ecs, 0);
+
+    // All systems should process all entities
+    int total = atomic_load(&mt_many_systems_total);
+    REQUIRE(total == NUM_SYSTEMS * NUM_ENTITIES);
 
     ecs_free(ecs);
     tpool_destroy(g_tpool);
@@ -685,10 +878,14 @@ TEST_SUITE(ecs_suite)
     RUN_TEST_CASE(test_system_execution);
     RUN_TEST_CASE(test_system_with_query);
     RUN_TEST_CASE(test_system_none_of_filter);
-    RUN_TEST_CASE(test_selective_phase_execution);
-    RUN_TEST_CASE(test_phase_sync_applies_deferred_adds);
+    RUN_TEST_CASE(test_selective_group_execution);
+    RUN_TEST_CASE(test_stage_sync_applies_deferred_adds);
     RUN_TEST_CASE(test_system_udata_roundtrip);
 
     RUN_TEST_CASE(test_multithreading_basic);
     RUN_TEST_CASE(test_multithreading_verify_parallel_execution);
+
+    RUN_TEST_CASE(test_mt_independent_systems_parallel);
+    RUN_TEST_CASE(test_mt_conflicting_systems_staged);
+    RUN_TEST_CASE(test_mt_many_systems_batching);
 }

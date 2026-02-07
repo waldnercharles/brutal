@@ -87,7 +87,7 @@ struct benchmark_s
 
     double M2_cpu, M2_real; // Running sum of squared deviations from the mean.
     double variance_cpu, variance_real;
-    long unsigned int iterations;
+    int iterations;
 
     clock_t start_time_cpu;
     struct timespec start_time_real;
@@ -95,16 +95,12 @@ struct benchmark_s
 
 void bench_start(benchmark_t *b)
 {
-    if (!b) return;
     b->start_time_cpu = clock();
     clock_gettime(CLOCK_MONOTONIC, &b->start_time_real);
-    return;
 }
 
 void bench_stop(benchmark_t *b)
 {
-    if (!b) return;
-
     double stop_time_cpu = clock();
     struct timespec stop_time_real;
     clock_gettime(CLOCK_MONOTONIC, &stop_time_real);
@@ -133,15 +129,11 @@ void bench_stop(benchmark_t *b)
     double delta2_real = diff_real - b->mean_real;
     b->M2_real += delta_real * delta2_real;
     b->variance_real = b->M2_real / b->iterations;
-
-    return;
 }
 
 void bench_clear(benchmark_t *b)
 {
-    if (!b) return;
     *b = (benchmark_t){ 0 };
-    return;
 }
 
 double bench_get_min_real(benchmark_t *b)
@@ -309,9 +301,9 @@ void bench_default_reporter_stdout(benchmark_t *b)
     bench_print_bottom_border();
 }
 
-void bench_report_with(benchmark_t *b, bench_report_fn reporter)
+void bench_report_with(benchmark_t *b, bench_report_fn fn)
 {
-    reporter(b);
+    fn(b);
 }
 
 void bench_report(benchmark_t *b)
@@ -376,7 +368,7 @@ void bench_run_bench(
     bench_num_benches++;
 
     benchmark_t b = { 0 };
-    bench_run run = { .udata = udata, .iteration = 0, .is_warmup = 0 };
+    bench_run run = { .udata = udata, .iteration = 0, .is_warmup = false };
 
     for (int i = 0; i < bench_warmup; i++) {
         run.iteration = i;
@@ -455,5 +447,5 @@ void bench_print_stats()
     }
 }
 
-#endif // BRUTAL_BENCH_WRAPPER_IMPLEMENTATION
+#endif // BRUTAL_BENCH_IMPLEMENTATION
 #endif // BRUTAL_BENCH_H

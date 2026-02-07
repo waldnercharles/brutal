@@ -95,7 +95,7 @@ void tpool_wait(tpool_t *pool);
  * Waits for all jobs to complete, stops workers, joins threads, and frees
  * all resources. Safe to call with NULL.
  *
- * @param pool Thread pool (may be NULL)
+ * @param pool Thread pool
  */
 void tpool_destroy(tpool_t *pool);
 
@@ -309,7 +309,7 @@ void tpool_enqueue(tpool_t *p, int (*fn)(void *), void *arg)
 {
     assert(p);
 
-    if (!fn) return;
+    assert(fn);
     if (atomic_load_explicit(&p->stop, memory_order_acquire)) return;
 
     atomic_fetch_add_explicit(&p->in_flight, 1, memory_order_acq_rel);
@@ -360,8 +360,6 @@ void tpool_wait(tpool_t *p)
 
 void tpool_destroy(tpool_t *p)
 {
-    if (!p) return;
-
     tpool_wait(p);
 
     atomic_store_explicit(&p->stop, true, memory_order_release);

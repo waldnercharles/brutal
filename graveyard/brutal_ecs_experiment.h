@@ -92,8 +92,6 @@ typedef int (*ecs_system_fn)(ecs_t *ecs, ecs_view *view, void *udata);
 typedef int (*ecs_enqueue_task_fn)(int (*fn)(void *args), void *fn_args, void *udata);
 typedef void (*ecs_wait_tasks_fn)(void *udata);
 
-#include <stdbool.h>
-
 #define ECS_COMPONENT(ecs_ptr, Type)                                           \
     ecs_register_component((ecs_ptr), (int)sizeof(Type))
 
@@ -117,15 +115,17 @@ ecs_comp_t ecs_register_component(ecs_t *ecs, int size);
 void *ecs_add(ecs_t *ecs, ecs_entity entity, ecs_comp_t component);
 void ecs_remove(ecs_t *ecs, ecs_entity entity, ecs_comp_t component);
 void *ecs_get(ecs_t *ecs, ecs_entity entity, ecs_comp_t component);
-bool ecs_has(ecs_t *ecs, ecs_entity entity, ecs_comp_t component);
+int ecs_has(ecs_t *ecs, ecs_entity entity, ecs_comp_t component);
 
 // Systems
 ecs_sys_t ecs_sys_create(ecs_t *ecs, ecs_system_fn fn, void *udata);
 void ecs_sys_require(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp);
 void ecs_sys_exclude(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp);
+void ecs_sys_read(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp);
+void ecs_sys_write(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp);
+void ecs_sys_after(ecs_t *ecs, ecs_sys_t sys, ecs_sys_t dependency);
 void ecs_sys_enable(ecs_t *ecs, ecs_sys_t sys);
 void ecs_sys_disable(ecs_t *ecs, ecs_sys_t sys);
-void ecs_sys_set_parallel(ecs_t *ecs, ecs_sys_t sys, bool parallel);
 void ecs_sys_set_group(ecs_t *ecs, ecs_sys_t sys, int group);
 int ecs_sys_get_group(ecs_t *ecs, ecs_sys_t sys);
 void ecs_sys_set_udata(ecs_t *ecs, ecs_sys_t sys, void *udata);
@@ -134,6 +134,9 @@ void *ecs_sys_get_udata(ecs_t *ecs, ecs_sys_t sys);
 // Execution
 int ecs_run_system(ecs_t *ecs, ecs_sys_t sys, float dt);
 int ecs_progress(ecs_t *ecs, int group_mask);
+
+// Debug
+void ecs_dump_schedule(ecs_t *ecs);
 
 #endif // BRUTAL_ECS_H
 
@@ -149,6 +152,7 @@ int ecs_progress(ecs_t *ecs, int group_mask);
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -318,7 +322,7 @@ static inline void ecs_ss_reserve_dense(ecs_sparse_set *set, int need)
     set->dense_cap = cap;
 }
 
-static inline bool ecs_ss_has(ecs_sparse_set *set, ecs_entity entity)
+static inline int ecs_ss_has(ecs_sparse_set *set, ecs_entity entity)
 {
     return (entity < set->sparse_cap) && (set->sparse[entity] != 0);
 }
@@ -329,22 +333,22 @@ static inline int ecs_ss_index_of(ecs_sparse_set *s, ecs_entity entity)
     return s->sparse[entity] - 1;
 }
 
-static inline bool ecs_ss_insert(ecs_sparse_set *set, ecs_entity entity)
+static inline int ecs_ss_insert(ecs_sparse_set *set, ecs_entity entity)
 {
     ecs_ss_reserve_sparse(set, (int)entity + 1);
-    if (set->sparse[entity]) return false;
+    if (set->sparse[entity]) return 0;
     ecs_ss_reserve_dense(set, set->count + 1);
     int idx = set->count++;
     set->dense[idx] = entity;
     set->sparse[entity] = idx + 1;
-    return true;
+    return 1;
 }
 
-static inline bool ecs_ss_remove(ecs_sparse_set *set, ecs_entity entity)
+static inline int ecs_ss_remove(ecs_sparse_set *set, ecs_entity entity)
 {
-    if (entity >= (ecs_entity)set->sparse_cap) return false;
+    if (entity >= (ecs_entity)set->sparse_cap) return 0;
     int idx = set->sparse[entity];
-    if (!idx) return false;
+    if (!idx) return 0;
 
     idx--;
     int last = set->count - 1;
@@ -355,7 +359,7 @@ static inline bool ecs_ss_remove(ecs_sparse_set *set, ecs_entity entity)
 
     set->sparse[entity] = 0;
     if (idx != last) set->sparse[last_id] = idx + 1;
-    return true;
+    return 1;
 }
 
 // -----------------------------------------------------------------------------
@@ -408,9 +412,9 @@ static inline void *ecs_pool_add(ecs_pool *pool, ecs_entity e)
     return ecs_pool_ptr_at(pool, ecs_ss_index_of(&pool->set, e));
 }
 
-static inline bool ecs_pool_remove(ecs_pool *pool, ecs_entity e)
+static inline int ecs_pool_remove(ecs_pool *pool, ecs_entity e)
 {
-    if (!ecs_ss_has(&pool->set, e)) return false;
+    if (!ecs_ss_has(&pool->set, e)) return 0;
     int idx = ecs_ss_index_of(&pool->set, e);
     int last = pool->set.count - 1;
     if (idx != last) {
@@ -465,18 +469,32 @@ typedef struct
 {
     ecs_bitset all_of;
     ecs_bitset none_of;
+    ecs_bitset read;
+    ecs_bitset write;
+    ecs_bitset rw;
+    ecs_bitset after;
     int group;
     ecs_system_fn fn;
     void *udata;
     bool enabled;
-    bool parallel;
 } ecs_system;
+
+typedef struct
+{
+    ecs_bitset read_union;
+    ecs_bitset write_union;
+
+    int sys_idx[ECS_MAX_SYSTEMS];
+    int sys_count;
+} ecs_stage;
 
 typedef struct
 {
     ecs_t *ecs;
     int sys_index;
     int task_index;
+    int slice_index;
+    int slice_count;
     uint8_t *scratch_buffer;
     int scratch_capacity;
 } ecs_task_args;
@@ -497,13 +515,18 @@ struct ecs_s
     ecs_system systems[ECS_MAX_SYSTEMS];
     int system_count;
 
+    // Schedule cache
+    ecs_stage cached_stages[ECS_MAX_SYSTEMS];
+    int cached_stage_count;
+    bool schedule_dirty;
+
     // Multithreading
     ecs_enqueue_task_fn enqueue_cb;
     ecs_wait_tasks_fn wait_cb;
     void *task_udata;
     int task_count;
 
-    bool in_progress;
+    int in_progress;
 
     ecs_task_args task_args_storage[ECS_MT_MAX_TASKS];
     uint8_t *task_scratch[ECS_MT_MAX_TASKS];
@@ -610,7 +633,7 @@ static inline void *ecs_add_deferred(ecs_t *ecs, ecs_entity entity, ecs_comp_t c
 
     int element_size = ecs->pools[component].element_size;
     ecs_cmd_buffer *cb = ecs_current_cmd_buffer(ecs);
-    void *data = ecs_cmd_alloc_data(cb, element_size);
+    void *data = ecs_cmd_alloc_data(cb, (size_t)element_size);
     memset(data, 0, (size_t)element_size);
 
     ecs_cmd cmd = { .type = ECS_CMD_ADD,
@@ -676,34 +699,122 @@ static inline void ecs_sync(ecs_t *ecs)
 }
 
 // -----------------------------------------------------------------------------
+//  Scheduling
+
+static inline bool ecs_systems_conflict(ecs_system *a, ecs_system *b)
+{
+    if (ecs_bs_intersects(&a->write, &b->rw)) return true;
+    if (ecs_bs_intersects(&b->write, &a->rw)) return true;
+    return false;
+}
+
+static inline int ecs_build_stages(ecs_t *ecs, ecs_stage *out_stages, int max_stages)
+{
+    memset(out_stages, 0, (size_t)max_stages * sizeof(*out_stages));
+
+    int n = ecs->system_count;
+    if (n == 0) return 0;
+
+    // Build predecessor bitsets for each system
+    ecs_bitset predecessors[ECS_MAX_SYSTEMS];
+    for (int i = 0; i < n; i++) { ecs_bs_zero(&predecessors[i]); }
+
+    // Add edges from conflicts (directed by registration order)
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
+            if (ecs_systems_conflict(&ecs->systems[i], &ecs->systems[j])) {
+                // j depends on i (i -> j)
+                ecs_bs_set(&predecessors[j], i);
+            }
+        }
+    }
+
+    // Add explicit 'after' edges
+    for (int i = 0; i < n; i++) {
+        ecs_system *s = &ecs->systems[i];
+        for (int w = 0; w < ECS_BS_WORDS; w++) {
+            uint64_t word = s->after.words[w];
+            while (word) {
+                int bit = ecs_ctz64(word) + (w * 64);
+                if (bit < n) {
+                    // i depends on bit (bit -> i)
+                    ecs_bs_set(&predecessors[i], bit);
+                }
+                word &= (word - 1ull);
+            }
+        }
+    }
+
+    // Compute stage assignments via BFS (Kahn's algorithm)
+    int stage_assignment[ECS_MAX_SYSTEMS];
+    bool visited[ECS_MAX_SYSTEMS] = { 0 };
+    int max_stage = -1;
+
+    for (int i = 0; i < n; i++) {
+        if (visited[i]) continue;
+
+        // Compute stage for system i
+        int stage = 0;
+        for (int w = 0; w < ECS_BS_WORDS; w++) {
+            uint64_t word = predecessors[i].words[w];
+            while (word) {
+                int pred = ecs_ctz64(word) + (w * 64);
+                if (pred < n && visited[pred]) {
+                    int pred_stage = stage_assignment[pred];
+                    if (pred_stage + 1 > stage) { stage = pred_stage + 1; }
+                }
+                word &= (word - 1ull);
+            }
+        }
+
+        stage_assignment[i] = stage;
+        visited[i] = true;
+        if (stage > max_stage) max_stage = stage;
+    }
+
+    int stage_count = max_stage + 1;
+    assert(stage_count <= max_stages);
+
+    // Populate output stages
+    for (int i = 0; i < n; i++) {
+        int stage = stage_assignment[i];
+        ecs_stage *s = &out_stages[stage];
+        assert(s->sys_count < ECS_MAX_SYSTEMS);
+        s->sys_idx[s->sys_count++] = i;
+    }
+
+    return stage_count;
+}
+
+// -----------------------------------------------------------------------------
 //  Matching
 
-static inline bool ecs_entity_has_all_of(ecs_t *ecs, ecs_entity e, ecs_bitset *all_of)
+static inline int ecs_entity_has_all_of(ecs_t *ecs, ecs_entity e, ecs_bitset *all_of)
 {
-    for (int w = 0; w < ECS_BS_WORDS; w++) {
+    for (uint32_t w = 0; w < ECS_BS_WORDS; w++) {
         uint64_t word = all_of->words[w];
         while (word) {
             int bit = ecs_ctz64(word) + (w * 64);
-            if (bit >= ecs->comp_count) return false;
-            if (!ecs_ss_has(&ecs->pools[bit].set, e)) return false;
+            if (bit >= ecs->comp_count) return 0;
+            if (!ecs_ss_has(&ecs->pools[bit].set, e)) return 0;
             word &= (word - 1ull);
         }
     }
-    return true;
+    return 1;
 }
 
-static inline bool ecs_entity_has_any_of(ecs_t *ecs, ecs_entity e, ecs_bitset *any_of)
+static inline int ecs_entity_has_any_of(ecs_t *ecs, ecs_entity e, ecs_bitset *any_of)
 {
-    for (int w = 0; w < ECS_BS_WORDS; w++) {
+    for (uint32_t w = 0; w < ECS_BS_WORDS; w++) {
         uint64_t word = any_of->words[w];
         while (word) {
             int bit = ecs_ctz64(word) + (w * 64);
             if (bit < ecs->comp_count && ecs_ss_has(&ecs->pools[bit].set, e))
-                return true;
+                return 1;
             word &= (word - 1ull);
         }
     }
-    return false;
+    return 0;
 }
 
 static inline ecs_comp_t ecs_pick_driver(ecs_t *ecs, ecs_bitset *all_of)
@@ -711,7 +822,7 @@ static inline ecs_comp_t ecs_pick_driver(ecs_t *ecs, ecs_bitset *all_of)
     ecs_comp_t best = (ecs_comp_t)-1;
     int best_n = INT_MAX;
 
-    for (int w = 0; w < ECS_BS_WORDS; w++) {
+    for (uint32_t w = 0; w < ECS_BS_WORDS; w++) {
         uint64_t word = all_of->words[w];
         while (word) {
             int bit = ecs_ctz64(word) + (w * 64);
@@ -744,10 +855,8 @@ static inline int ecs_run_system_task(void *args_v)
     int entity_count = set->count;
     if (!entity_count) { goto done; }
 
-    int task_count = ecs->task_count;
-    int task_idx = args->task_index;
-    int start = (entity_count * task_idx) / task_count;
-    int end = (entity_count * (task_idx + 1)) / task_count;
+    int start = (entity_count * args->slice_index) / args->slice_count;
+    int end = (entity_count * (args->slice_index + 1)) / args->slice_count;
     int slice_count = end - start;
 
     int needed = slice_count * sizeof(ecs_entity);
@@ -796,6 +905,7 @@ ecs_t *ecs_new()
     atomic_store(&ecs->next_entity, 1);
     atomic_store(&ecs->free_list_head, -1);
     ecs->task_count = 1;
+    ecs->schedule_dirty = true;
 
     ecs->free_list_capacity = 1024;
     ecs->free_list_next = (int *)malloc((size_t)ecs->free_list_capacity * sizeof(int));
@@ -816,6 +926,8 @@ ecs_t *ecs_new()
 
 void ecs_free(ecs_t *ecs)
 {
+    if (!ecs) return;
+
     for (int i = 0; i < ecs->comp_count; i++) ecs_pool_free(&ecs->pools[i]);
     free(ecs->free_list_next);
 
@@ -906,7 +1018,7 @@ void *ecs_get(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
     return ecs_pool_get(&ecs->pools[component], entity);
 }
 
-bool ecs_has(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
+int ecs_has(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
 {
     assert(component < ecs->comp_count);
     return ecs_ss_has(&ecs->pools[component].set, entity);
@@ -924,6 +1036,7 @@ ecs_sys_t ecs_sys_create(ecs_t *ecs, ecs_system_fn fn, void *udata)
     s->fn = fn;
     s->udata = udata;
     s->enabled = true;
+    ecs->schedule_dirty = true;
 
     return sys;
 }
@@ -933,30 +1046,56 @@ void ecs_sys_require(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
     assert(sys >= 0 && sys < ecs->system_count);
     ecs_system *s = &ecs->systems[sys];
     ecs_bs_set(&s->all_of, comp);
+    ecs_bs_set(&s->read, comp);
+    ecs_bs_set(&s->rw, comp);
+    ecs->schedule_dirty = true;
 }
 
 void ecs_sys_exclude(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
 {
     assert(sys >= 0 && sys < ecs->system_count);
     ecs_bs_set(&ecs->systems[sys].none_of, comp);
+    ecs->schedule_dirty = true;
+}
+
+void ecs_sys_read(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
+{
+    assert(sys >= 0 && sys < ecs->system_count);
+    ecs_system *s = &ecs->systems[sys];
+    ecs_bs_set(&s->read, comp);
+    ecs_bs_set(&s->rw, comp);
+    ecs->schedule_dirty = true;
+}
+
+void ecs_sys_write(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
+{
+    assert(sys >= 0 && sys < ecs->system_count);
+    ecs_system *s = &ecs->systems[sys];
+    ecs_bs_set(&s->write, comp);
+    ecs_bs_set(&s->rw, comp);
+    ecs->schedule_dirty = true;
+}
+
+void ecs_sys_after(ecs_t *ecs, ecs_sys_t sys, ecs_sys_t dependency)
+{
+    assert(sys >= 0 && sys < ecs->system_count);
+    assert(dependency >= 0 && dependency < ecs->system_count);
+    ecs_bs_set(&ecs->systems[sys].after, dependency);
+    ecs->schedule_dirty = true;
 }
 
 void ecs_sys_enable(ecs_t *ecs, ecs_sys_t sys)
 {
     assert(sys >= 0 && sys < ecs->system_count);
     ecs->systems[sys].enabled = true;
+    ecs->schedule_dirty = true;
 }
 
 void ecs_sys_disable(ecs_t *ecs, ecs_sys_t sys)
 {
     assert(sys >= 0 && sys < ecs->system_count);
     ecs->systems[sys].enabled = false;
-}
-
-void ecs_sys_set_parallel(ecs_t *ecs, ecs_sys_t sys, bool parallel)
-{
-    assert(sys >= 0 && sys < ecs->system_count);
-    ecs->systems[sys].parallel = parallel;
+    ecs->schedule_dirty = true;
 }
 
 void ecs_sys_set_group(ecs_t *ecs, ecs_sys_t sys, int group)
@@ -991,15 +1130,17 @@ int ecs_run_system(ecs_t *ecs, ecs_sys_t sys, float dt)
     ecs_system *s = &ecs->systems[sys];
     if (!s->enabled) return 0;
 
-    ecs->in_progress = true;
+    ecs->in_progress = 1;
 
-    bool mt = (s->parallel && ecs->enqueue_cb && ecs->wait_cb && ecs->task_count > 1);
+    int mt = (ecs->enqueue_cb && ecs->wait_cb && ecs->task_count > 1);
     int ret = 0;
 
     if (!mt) {
         ecs_task_args a = { .ecs = ecs,
                             .sys_index = sys,
                             .task_index = 0,
+                            .slice_index = 0,
+                            .slice_count = 1,
                             .scratch_buffer = ecs->task_scratch[0],
                             .scratch_capacity = ecs->task_scratch_capacity[0] };
         ret = ecs_run_system_task(&a);
@@ -1010,6 +1151,8 @@ int ecs_run_system(ecs_t *ecs, ecs_sys_t sys, float dt)
             args[t].ecs = ecs;
             args[t].sys_index = sys;
             args[t].task_index = t;
+            args[t].slice_index = t;
+            args[t].slice_count = ecs->task_count;
             args[t].scratch_buffer = ecs->task_scratch[t];
             args[t].scratch_capacity = ecs->task_scratch_capacity[t];
 
@@ -1024,55 +1167,166 @@ int ecs_run_system(ecs_t *ecs, ecs_sys_t sys, float dt)
     }
 
 done:
-    ecs->in_progress = false;
+    ecs->in_progress = 0;
     ecs_sync(ecs);
     return ret;
 }
 
 int ecs_progress(ecs_t *ecs, int group_mask)
 {
+    // Rebuild schedule if dirty
+    if (ecs->schedule_dirty) {
+        ecs->cached_stage_count = ecs_build_stages(ecs, ecs->cached_stages, ECS_MAX_SYSTEMS);
+        ecs->schedule_dirty = false;
+    }
+
+    ecs->in_progress = 1;
+
+    int mt = (ecs->enqueue_cb && ecs->wait_cb && ecs->task_count > 1);
     int ret = 0;
 
-    for (int i = 0; i < ecs->system_count; i++) {
-        ecs_system *s = &ecs->systems[i];
-        if (!s->enabled) continue;
+    for (int p = 0; p < ecs->cached_stage_count; p++) {
+        ecs_stage *stage = &ecs->cached_stages[p];
 
-        int matches = (group_mask == 0) ? (s->group == 0)
-                                        : (s->group & group_mask);
-        if (!matches) continue;
+        // Collect active systems for this stage
+        int active_systems[ECS_MAX_SYSTEMS];
+        int active_count = 0;
 
-        ecs->in_progress = true;
+        for (int i = 0; i < stage->sys_count; i++) {
+            int sys_index = stage->sys_idx[i];
+            ecs_system *s = &ecs->systems[sys_index];
 
-        bool mt = (s->parallel && ecs->enqueue_cb && ecs->wait_cb && ecs->task_count > 1);
+            if (!s->enabled) continue;
 
+            int matches = (group_mask == 0) ? (s->group == 0)
+                                            : (s->group & group_mask);
+
+            if (!matches) continue;
+
+            active_systems[active_count++] = sys_index;
+        }
+
+        // Skip empty stages
+        if (active_count == 0) continue;
+
+        // ST path: run each active system sequentially with slice_count = 1
         if (!mt) {
-            ecs_task_args a = { .ecs = ecs, .sys_index = i, .task_index = 0,
-                                .scratch_buffer = ecs->task_scratch[0],
-                                .scratch_capacity = ecs->task_scratch_capacity[0] };
-            ret = ecs_run_system_task(&a);
-        } else {
-            ecs_task_args *args = ecs->task_args_storage;
-            for (int t = 0; t < ecs->task_count; t++) {
-                args[t].ecs = ecs;
-                args[t].sys_index = i;
-                args[t].task_index = t;
-                args[t].scratch_buffer = ecs->task_scratch[t];
-                args[t].scratch_capacity = ecs->task_scratch_capacity[t];
-                int enqueue_ret = ecs->enqueue_cb(ecs_run_system_task, &args[t], ecs->task_udata);
-                if (enqueue_ret) { ret = enqueue_ret; goto done; }
+            for (int i = 0; i < active_count; i++) {
+                int sys_index = active_systems[i];
+                ecs_task_args a = { .ecs = ecs,
+                                    .sys_index = sys_index,
+                                    .task_index = 0,
+                                    .slice_index = 0,
+                                    .slice_count = 1,
+                                    .scratch_buffer = ecs->task_scratch[0],
+                                    .scratch_capacity = ecs->task_scratch_capacity[0] };
+                ret = ecs_run_system_task(&a);
+                if (ret) goto done;
             }
+        } else {
+            // MT path: enqueue active_count × task_count tasks per stage
+            // Every system gets full entity parallelism AND systems run concurrently
+            int tc = ecs->task_count;
+            ecs_task_args *args = ecs->task_args_storage;
+            int task_slot = 0;
+
+            for (int i = 0; i < active_count; i++) {
+                int sys_index = active_systems[i];
+
+                for (int t = 0; t < tc; t++) {
+                    assert(task_slot < ECS_MT_MAX_TASKS);
+                    args[task_slot].ecs = ecs;
+                    args[task_slot].sys_index = sys_index;
+                    args[task_slot].task_index = task_slot;
+                    args[task_slot].slice_index = t;
+                    args[task_slot].slice_count = tc;
+                    args[task_slot].scratch_buffer = ecs->task_scratch[task_slot];
+                    args[task_slot].scratch_capacity = ecs->task_scratch_capacity[task_slot];
+
+                    int enqueue_ret = ecs->enqueue_cb(
+                        ecs_run_system_task, &args[task_slot], ecs->task_udata);
+                    if (enqueue_ret) {
+                        ret = enqueue_ret;
+                        goto done;
+                    }
+                    task_slot++;
+                }
+            }
+
             ecs->wait_cb(ecs->task_udata);
         }
 
-        ecs->in_progress = false;
+        // Sync at end of each stage
+        ecs->in_progress = 0;
         ecs_sync(ecs);
-        if (ret) goto done;
+        ecs->in_progress = 1;
     }
 
 done:
-    ecs->in_progress = false;
+    ecs->in_progress = 0;
     ecs_sync(ecs);
     return ret;
+}
+
+void ecs_dump_schedule(ecs_t *ecs)
+{
+    // Rebuild schedule if dirty
+    if (ecs->schedule_dirty) {
+        ecs->cached_stage_count = ecs_build_stages(ecs, ecs->cached_stages, ECS_MAX_SYSTEMS);
+        ecs->schedule_dirty = false;
+    }
+
+    fprintf(stderr, "=== ECS Schedule (%d stages) ===\n", ecs->cached_stage_count);
+
+    for (int stage = 0; stage < ecs->cached_stage_count; stage++) {
+        ecs_stage *s = &ecs->cached_stages[stage];
+        fprintf(stderr, "Stage %d (%d systems):\n", stage, s->sys_count);
+
+        for (int i = 0; i < s->sys_count; i++) {
+            int sys_idx = s->sys_idx[i];
+            ecs_system *sys = &ecs->systems[sys_idx];
+
+            fprintf(stderr, "  System %d: enabled=%d group=%d\n", sys_idx, sys->enabled, sys->group);
+
+            // Print read components
+            fprintf(stderr, "    read: ");
+            bool any_read = false;
+            for (int c = 0; c < ecs->comp_count; c++) {
+                if (ecs_bs_test(&sys->read, c)) {
+                    fprintf(stderr, "%d ", c);
+                    any_read = true;
+                }
+            }
+            if (!any_read) fprintf(stderr, "(none)");
+            fprintf(stderr, "\n");
+
+            // Print write components
+            fprintf(stderr, "    write: ");
+            bool any_write = false;
+            for (int c = 0; c < ecs->comp_count; c++) {
+                if (ecs_bs_test(&sys->write, c)) {
+                    fprintf(stderr, "%d ", c);
+                    any_write = true;
+                }
+            }
+            if (!any_write) fprintf(stderr, "(none)");
+            fprintf(stderr, "\n");
+
+            // Print after dependencies
+            fprintf(stderr, "    after: ");
+            bool any_after = false;
+            for (int d = 0; d < ecs->system_count; d++) {
+                if (ecs_bs_test(&sys->after, d)) {
+                    fprintf(stderr, "%d ", d);
+                    any_after = true;
+                }
+            }
+            if (!any_after) fprintf(stderr, "(none)");
+            fprintf(stderr, "\n");
+        }
+    }
+
+    fprintf(stderr, "=== End Schedule ===\n");
 }
 
 #endif // BRUTAL_ECS_IMPLEMENTATION
