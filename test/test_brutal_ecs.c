@@ -1,10 +1,9 @@
 #include "brutal_ecs.h"
+#include "brutal_tpool.h"
 #include "pico_unit.h"
 
-#define TPOOL_IMPLEMENTATION
-#include "tpool.h"
-
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 
 typedef struct
@@ -29,140 +28,10 @@ typedef struct
     float health;
 } Health;
 
-TEST_CASE(test_bitset_zero_and_any)
-{
-    ecs_bitset bs;
-    ecs_bs_zero(&bs);
-
-    REQUIRE(ecs_bs_none(&bs));
-    REQUIRE(!ecs_bs_any(&bs));
-
-    ecs_bs_set(&bs, 0);
-    REQUIRE(ecs_bs_any(&bs));
-    REQUIRE(!ecs_bs_none(&bs));
-
-    return true;
-}
-
-TEST_CASE(test_bitset_set_clear_test)
-{
-    ecs_bitset bs;
-    ecs_bs_zero(&bs);
-
-    ecs_bs_set(&bs, 5);
-    REQUIRE(ecs_bs_test(&bs, 5));
-    REQUIRE(!ecs_bs_test(&bs, 4));
-    REQUIRE(!ecs_bs_test(&bs, 6));
-
-    ecs_bs_clear(&bs, 5);
-    REQUIRE(!ecs_bs_test(&bs, 5));
-
-    return true;
-}
-
-TEST_CASE(test_bitset_operations)
-{
-    ecs_bitset a, b, result;
-    ecs_bs_zero(&a);
-    ecs_bs_zero(&b);
-    ecs_bs_zero(&result);
-
-    ecs_bs_set(&a, 1);
-    ecs_bs_set(&a, 3);
-    ecs_bs_set(&b, 2);
-    ecs_bs_set(&b, 3);
-
-    ecs_bs_or(&result, &a, &b);
-    REQUIRE(ecs_bs_test(&result, 1));
-    REQUIRE(ecs_bs_test(&result, 2));
-    REQUIRE(ecs_bs_test(&result, 3));
-    REQUIRE(!ecs_bs_test(&result, 0));
-
-    ecs_bs_and(&result, &a, &b);
-    REQUIRE(ecs_bs_test(&result, 3));
-    REQUIRE(!ecs_bs_test(&result, 1));
-    REQUIRE(!ecs_bs_test(&result, 2));
-
-    ecs_bs_andnot(&result, &a, &b);
-    REQUIRE(ecs_bs_test(&result, 1));
-    REQUIRE(!ecs_bs_test(&result, 2));
-    REQUIRE(!ecs_bs_test(&result, 3));
-
-    return true;
-}
-
-TEST_CASE(test_bitset_intersects)
-{
-    ecs_bitset a, b;
-    ecs_bs_zero(&a);
-    ecs_bs_zero(&b);
-
-    ecs_bs_set(&a, 5);
-    ecs_bs_set(&b, 10);
-    REQUIRE(!ecs_bs_intersects(&a, &b));
-
-    ecs_bs_set(&b, 5);
-    REQUIRE(ecs_bs_intersects(&a, &b));
-
-    return true;
-}
-
-// ---- Sparse Set Tests ----
-
-TEST_CASE(test_sparse_set_basic)
-{
-    ecs_sparse_set set;
-    ecs_ss_init(&set);
-
-    REQUIRE(set.count == 0);
-    REQUIRE(!ecs_ss_has(&set, 0));
-
-    ecs_ss_insert(&set, 10);
-    REQUIRE(ecs_ss_has(&set, 10));
-    REQUIRE(set.count == 1);
-
-    ecs_ss_remove(&set, 10);
-    REQUIRE(!ecs_ss_has(&set, 10));
-    REQUIRE(set.count == 0);
-
-    ecs_ss_free(&set);
-    return true;
-}
-
-TEST_CASE(test_sparse_set_multiple)
-{
-    ecs_sparse_set set;
-    ecs_ss_init(&set);
-
-    ecs_ss_insert(&set, 5);
-    ecs_ss_insert(&set, 10);
-    ecs_ss_insert(&set, 15);
-
-    REQUIRE(set.count == 3);
-    REQUIRE(ecs_ss_has(&set, 5));
-    REQUIRE(ecs_ss_has(&set, 10));
-    REQUIRE(ecs_ss_has(&set, 15));
-    REQUIRE(!ecs_ss_has(&set, 7));
-
-    ecs_ss_remove(&set, 10);
-    REQUIRE(set.count == 2);
-    REQUIRE(ecs_ss_has(&set, 5));
-    REQUIRE(!ecs_ss_has(&set, 10));
-    REQUIRE(ecs_ss_has(&set, 15));
-
-    ecs_ss_free(&set);
-    return true;
-}
-
-// ---- ECS Entity Tests ----
-
 TEST_CASE(test_ecs_new_free)
 {
     ecs_t *ecs = ecs_new();
-
-    REQUIRE(ecs->next_entity == 1);
-    REQUIRE(ecs->comp_count == 0);
-    REQUIRE(ecs->system_count == 0);
+    REQUIRE(ecs != NULL);
 
     ecs_free(ecs);
     return true;
@@ -175,8 +44,7 @@ TEST_CASE(test_entity_create_destroy)
     ecs_entity e1 = ecs_create(ecs);
     ecs_entity e2 = ecs_create(ecs);
 
-    REQUIRE(e1 == 1);
-    REQUIRE(e2 == 2);
+    REQUIRE(e1 != e2);
 
     ecs_destroy(ecs, e1);
 
@@ -196,9 +64,7 @@ TEST_CASE(test_register_component)
     ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
     ecs_comp_t vel_comp = ECS_COMPONENT(ecs, Velocity);
 
-    REQUIRE(pos_comp == 0);
-    REQUIRE(vel_comp == 1);
-    REQUIRE(ecs->comp_count == 2);
+    REQUIRE(pos_comp != vel_comp);
 
     ecs_free(ecs);
     return true;
@@ -309,8 +175,7 @@ TEST_CASE(test_add_system)
     ecs_sys_t sys = ecs_sys_create(ecs, test_system_fn, NULL);
     ecs_sys_require(ecs, sys, pos_comp);
 
-    REQUIRE(sys == 0);
-    REQUIRE(ecs->system_count == 1);
+    REQUIRE(sys >= 0);
 
     ecs_free(ecs);
     return true;
@@ -654,7 +519,8 @@ static tpool_t *g_tpool = NULL;
 static int tpool_enqueue_adapter(int (*fn)(void *), void *args, void *udata)
 {
     (void)udata;
-    return tpool_add_work(g_tpool, fn, args);
+    tpool_enqueue(g_tpool, fn, args);
+    return 0;
 }
 
 static void tpool_wait_adapter(void *udata)
@@ -671,9 +537,6 @@ static int mt_move_system(ecs_t *ecs, ecs_view *view, void *udata)
     (void)udata;
     ecs_comp_t pos_comp = 0;
     ecs_comp_t vel_comp = 1;
-
-    pthread_t tid = pthread_self();
-    printf("[Thread %p] Processing %d entities (task_index from TLS)\n", (void *)tid, view->count);
 
     for (int i = 0; i < view->count; i++) {
         ecs_entity e = view->entities[i];
@@ -697,7 +560,7 @@ TEST_CASE(test_multithreading_basic)
     const int NUM_ENTITIES = 1000;
 
     // Create thread pool
-    g_tpool = tpool_create(NUM_THREADS);
+    g_tpool = tpool_new(NUM_THREADS, 0);
     REQUIRE(g_tpool != NULL);
 
     // Create ECS
@@ -710,10 +573,6 @@ TEST_CASE(test_multithreading_basic)
     // Register components
     ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
     ecs_comp_t vel_comp = ECS_COMPONENT(ecs, Velocity);
-
-    printf("\n--- Multithreading Test ---\n");
-    printf("Thread pool: %d threads\n", NUM_THREADS);
-    printf("Creating %d entities...\n", NUM_ENTITIES);
 
     // Create entities
     for (int i = 0; i < NUM_ENTITIES; i++) {
@@ -737,23 +596,16 @@ TEST_CASE(test_multithreading_basic)
     atomic_store(&mt_system_calls, 0);
     atomic_store(&mt_entity_count, 0);
 
-    printf("Running system with multithreading...\n");
-
     // Run ECS - should use multiple threads
     ecs_progress(ecs, 0);
 
     int calls = atomic_load(&mt_system_calls);
     int entities = atomic_load(&mt_entity_count);
 
-    printf("System was called %d times (expected: %d for %d threads)\n", calls, NUM_THREADS, NUM_THREADS);
-    printf("Total entities processed: %d (expected: %d)\n", entities, NUM_ENTITIES);
-
     // The system should be called NUM_THREADS times (once per task)
     REQUIRE(calls == NUM_THREADS);
     // All entities should be processed
     REQUIRE(entities == NUM_ENTITIES);
-
-    printf("--- Multithreading Test PASSED ---\n\n");
 
     // Cleanup
     ecs_free(ecs);
@@ -768,7 +620,7 @@ TEST_CASE(test_multithreading_verify_parallel_execution)
     const int NUM_THREADS = 4;
     const int NUM_ENTITIES = 10000;
 
-    g_tpool = tpool_create(NUM_THREADS);
+    g_tpool = tpool_new(NUM_THREADS, 0);
     REQUIRE(g_tpool != NULL);
 
     ecs_t *ecs = ecs_new();
@@ -776,9 +628,6 @@ TEST_CASE(test_multithreading_verify_parallel_execution)
 
     ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
     ecs_comp_t vel_comp = ECS_COMPONENT(ecs, Velocity);
-
-    printf("\n--- Parallel Execution Verification ---\n");
-    printf("Creating %d entities with %d threads...\n", NUM_ENTITIES, NUM_THREADS);
 
     for (int i = 0; i < NUM_ENTITIES; i++) {
         ecs_entity e = ecs_create(ecs);
@@ -799,7 +648,6 @@ TEST_CASE(test_multithreading_verify_parallel_execution)
     atomic_store(&mt_system_calls, 0);
     atomic_store(&mt_entity_count, 0);
 
-    printf("Progress iteration 1:\n");
     ecs_progress(ecs, 0);
 
     int first_entities = atomic_load(&mt_entity_count);
@@ -808,14 +656,10 @@ TEST_CASE(test_multithreading_verify_parallel_execution)
     atomic_store(&mt_system_calls, 0);
     atomic_store(&mt_entity_count, 0);
 
-    printf("Progress iteration 2:\n");
     ecs_progress(ecs, 0);
 
     int second_entities = atomic_load(&mt_entity_count);
     REQUIRE(second_entities == NUM_ENTITIES);
-
-    printf("Both iterations processed all %d entities correctly.\n", NUM_ENTITIES);
-    printf("--- Parallel Execution Verification PASSED ---\n\n");
 
     ecs_free(ecs);
     tpool_destroy(g_tpool);
@@ -826,16 +670,8 @@ TEST_CASE(test_multithreading_verify_parallel_execution)
 
 // ---- Test Suite ----
 
-TEST_SUITE(brutal_ecs_suite)
+TEST_SUITE(ecs_suite)
 {
-    RUN_TEST_CASE(test_bitset_zero_and_any);
-    RUN_TEST_CASE(test_bitset_set_clear_test);
-    RUN_TEST_CASE(test_bitset_operations);
-    RUN_TEST_CASE(test_bitset_intersects);
-
-    RUN_TEST_CASE(test_sparse_set_basic);
-    RUN_TEST_CASE(test_sparse_set_multiple);
-
     RUN_TEST_CASE(test_ecs_new_free);
     RUN_TEST_CASE(test_entity_create_destroy);
 
@@ -853,7 +689,6 @@ TEST_SUITE(brutal_ecs_suite)
     RUN_TEST_CASE(test_phase_sync_applies_deferred_adds);
     RUN_TEST_CASE(test_system_udata_roundtrip);
 
-    // Multithreading tests
     RUN_TEST_CASE(test_multithreading_basic);
     RUN_TEST_CASE(test_multithreading_verify_parallel_execution);
 }

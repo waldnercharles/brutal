@@ -5,13 +5,17 @@
 #include <assert.h>
 #include <stdio.h>
 
-extern void brutal_ecs_suite(void);
+extern void ecs_suite();
+extern void tpool_suite();
+extern void dyna_suite();
 
-int main(void)
+int main()
 {
     pu_display_colors(true);
 
-    RUN_TEST_SUITE(brutal_ecs_suite);
+    RUN_TEST_SUITE(ecs_suite);
+    RUN_TEST_SUITE(tpool_suite);
+    RUN_TEST_SUITE(dyna_suite);
 
     pu_print_stats();
     return pu_test_failed();

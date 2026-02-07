@@ -26,8 +26,16 @@ add_executable(
 )
 target_compile_options(
     test
-    PRIVATE -Wall -Wextra -Wpedantic -Werror -Wno-unused-function
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+        -Werror
+        -Wno-unused-function
+        -Wno-strict-prototypes
 )
+
+target_compile_definitions(test PRIVATE ECS_CACHE_LINE=128 TPOOL_CACHE_LINE=128)
 
 target_include_directories(test PUBLIC "${CMAKE_SOURCE_DIR}/include")
 set_target_properties(
@@ -50,5 +58,9 @@ target_compile_options(
         -Wpedantic
         -Wno-unused-function
         -Wno-strict-prototypes
+)
+target_compile_definitions(
+    benchmark
+    PRIVATE ECS_CACHE_LINE=128 TPOOL_CACHE_LINE=128
 )
 target_include_directories(benchmark PUBLIC "${CMAKE_SOURCE_DIR}/include")
