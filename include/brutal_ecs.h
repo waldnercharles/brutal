@@ -8,13 +8,15 @@
  *
  * USAGE EXAMPLE:
  *   typedef struct { float x, y; } Position;
+ *   ECS_DEFINE(Position);
+ *   // Use ECS_DECLARE(Position) if separating declaration from definition.
  *
  *   static int move_system(ecs_t *ecs, ecs_view *view, void *udata)
  *   {
- *       ecs_comp_t pos_comp = *(ecs_comp_t *)udata;
+ *       (void)udata;
  *       for (int i = 0; i < view->count; i++) {
  *           ecs_entity e = view->entities[i];
- *           Position *pos = (Position *)ecs_get(ecs, e, pos_comp);
+ *           Position *pos = ECS_GET(ecs, e, Position);
  *           pos->x += 1.0f;
  *       }
  *       return 0;
@@ -23,14 +25,14 @@
  *   int main()
  *   {
  *       ecs_t *ecs = ecs_new();
- *       ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
+ *       ECS_REGISTER(ecs, Position);
  *       ecs_entity e = ecs_create(ecs);
- *       Position *pos = (Position *)ecs_add(ecs, e, pos_comp);
+ *       Position *pos = ECS_ADD(ecs, e, Position);
  *       pos->x = 0.0f;
  *       pos->y = 0.0f;
  *
- *       ecs_sys_t move = ecs_sys_create(ecs, move_system, &pos_comp);
- *       ecs_sys_require(ecs, move, pos_comp);
+ *       ecs_sys_t move = ecs_sys_create(ecs, move_system, NULL);
+ *       ECS_REQUIRE(ecs, move, Position);
  *       ecs_progress(ecs, 0);
  *
  *       ecs_free(ecs);
@@ -94,31 +96,27 @@ typedef void (*ecs_wait_tasks_fn)(void *udata);
 
 #include <stdbool.h>
 
-#define ECS_COMPONENT(ecs_ptr, Type)                                           \
-    ecs_register_component((ecs_ptr), (int)sizeof(Type))
-
 // Component ID macros — derive a variable name from the type
 #define ECS_COMP_ID(Type) _ecs_comp_##Type
 #define ECS_DECLARE(Type) extern ecs_comp_t ECS_COMP_ID(Type)
 #define ECS_DEFINE(Type) ecs_comp_t ECS_COMP_ID(Type)
-#define ECS_REGISTER(ecs_ptr, Type)                                            \
-    (ECS_COMP_ID(Type) = ECS_COMPONENT((ecs_ptr), Type))
+#define ECS_REGISTER(ecs, Type)                                                \
+    (ECS_COMP_ID(Type) = ecs_register_component((ecs), (int)sizeof(Type)))
 
 // Type-safe component access
-#define ECS_GET(ecs_ptr, entity, Type)                                         \
-    ((Type *)ecs_get((ecs_ptr), (entity), ECS_COMP_ID(Type)))
-#define ECS_ADD(ecs_ptr, entity, Type)                                         \
-    ((Type *)ecs_add((ecs_ptr), (entity), ECS_COMP_ID(Type)))
-#define ECS_HAS(ecs_ptr, entity, Type)                                         \
-    ecs_has((ecs_ptr), (entity), ECS_COMP_ID(Type))
-#define ECS_REMOVE(ecs_ptr, entity, Type)                                      \
-    ecs_remove((ecs_ptr), (entity), ECS_COMP_ID(Type))
+#define ECS_GET(ecs, entity, Type)                                             \
+    ((Type *)ecs_get((ecs), (entity), ECS_COMP_ID(Type)))
+#define ECS_ADD(ecs, entity, Type)                                             \
+    ((Type *)ecs_add((ecs), (entity), ECS_COMP_ID(Type)))
+#define ECS_HAS(ecs, entity, Type) ecs_has((ecs), (entity), ECS_COMP_ID(Type))
+#define ECS_REMOVE(ecs, entity, Type)                                          \
+    ecs_remove((ecs), (entity), ECS_COMP_ID(Type))
 
 // Type-safe system query
-#define ECS_REQUIRE(ecs_ptr, sys, Type)                                        \
-    ecs_sys_require((ecs_ptr), (sys), ECS_COMP_ID(Type))
-#define ECS_EXCLUDE(ecs_ptr, sys, Type)                                        \
-    ecs_sys_exclude((ecs_ptr), (sys), ECS_COMP_ID(Type))
+#define ECS_REQUIRE(ecs, sys, Type)                                            \
+    ecs_sys_require((ecs), (sys), ECS_COMP_ID(Type))
+#define ECS_EXCLUDE(ecs, sys, Type)                                            \
+    ecs_sys_exclude((ecs), (sys), ECS_COMP_ID(Type))
 
 // Core
 ecs_t *ecs_new();
