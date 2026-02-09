@@ -97,6 +97,29 @@ typedef void (*ecs_wait_tasks_fn)(void *udata);
 #define ECS_COMPONENT(ecs_ptr, Type)                                           \
     ecs_register_component((ecs_ptr), (int)sizeof(Type))
 
+// Component ID macros — derive a variable name from the type
+#define ECS_COMP_ID(Type) _ecs_comp_##Type
+#define ECS_DECLARE(Type) extern ecs_comp_t ECS_COMP_ID(Type)
+#define ECS_DEFINE(Type) ecs_comp_t ECS_COMP_ID(Type)
+#define ECS_REGISTER(ecs_ptr, Type)                                            \
+    (ECS_COMP_ID(Type) = ECS_COMPONENT((ecs_ptr), Type))
+
+// Type-safe component access
+#define ECS_GET(ecs_ptr, entity, Type)                                         \
+    ((Type *)ecs_get((ecs_ptr), (entity), ECS_COMP_ID(Type)))
+#define ECS_ADD(ecs_ptr, entity, Type)                                         \
+    ((Type *)ecs_add((ecs_ptr), (entity), ECS_COMP_ID(Type)))
+#define ECS_HAS(ecs_ptr, entity, Type)                                         \
+    ecs_has((ecs_ptr), (entity), ECS_COMP_ID(Type))
+#define ECS_REMOVE(ecs_ptr, entity, Type)                                      \
+    ecs_remove((ecs_ptr), (entity), ECS_COMP_ID(Type))
+
+// Type-safe system query
+#define ECS_REQUIRE(ecs_ptr, sys, Type)                                        \
+    ecs_sys_require((ecs_ptr), (sys), ECS_COMP_ID(Type))
+#define ECS_EXCLUDE(ecs_ptr, sys, Type)                                        \
+    ecs_sys_exclude((ecs_ptr), (sys), ECS_COMP_ID(Type))
+
 // Core
 ecs_t *ecs_new();
 void ecs_free(ecs_t *ecs);
@@ -1037,8 +1060,7 @@ int ecs_progress(ecs_t *ecs, int group_mask)
         ecs_system *s = &ecs->systems[i];
         if (!s->enabled) continue;
 
-        int matches = (group_mask == 0) ? (s->group == 0)
-                                        : (s->group & group_mask);
+        int matches = (group_mask == 0) ? (s->group == 0) : (s->group & group_mask);
         if (!matches) continue;
 
         ecs->in_progress = true;
@@ -1046,7 +1068,9 @@ int ecs_progress(ecs_t *ecs, int group_mask)
         bool mt = (s->parallel && ecs->enqueue_cb && ecs->wait_cb && ecs->task_count > 1);
 
         if (!mt) {
-            ecs_task_args a = { .ecs = ecs, .sys_index = i, .task_index = 0,
+            ecs_task_args a = { .ecs = ecs,
+                                .sys_index = i,
+                                .task_index = 0,
                                 .scratch_buffer = ecs->task_scratch[0],
                                 .scratch_capacity = ecs->task_scratch_capacity[0] };
             ret = ecs_run_system_task(&a);
@@ -1059,7 +1083,10 @@ int ecs_progress(ecs_t *ecs, int group_mask)
                 args[t].scratch_buffer = ecs->task_scratch[t];
                 args[t].scratch_capacity = ecs->task_scratch_capacity[t];
                 int enqueue_ret = ecs->enqueue_cb(ecs_run_system_task, &args[t], ecs->task_udata);
-                if (enqueue_ret) { ret = enqueue_ret; goto done; }
+                if (enqueue_ret) {
+                    ret = enqueue_ret;
+                    goto done;
+                }
             }
             ecs->wait_cb(ecs->task_udata);
         }
