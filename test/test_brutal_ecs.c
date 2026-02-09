@@ -424,11 +424,10 @@ static int add_velocity_system(ecs_t *ecs, ecs_view *view, void *udata)
 static int consume_velocity_system(ecs_t *ecs, ecs_view *view, void *udata)
 {
     consume_velocity_state *state = (consume_velocity_state *)udata;
-    (void)ecs;
 
     for (int i = 0; i < view->count; i++) {
         ecs_entity e = view->entities[i];
-        Velocity *vel = (Velocity *)ecs_get(view->ecs, e, state->vel_comp);
+        Velocity *vel = (Velocity *)ecs_get(ecs, e, state->vel_comp);
         if (vel && vel->vx == 3 && vel->vy == 7) state->seen++;
     }
 

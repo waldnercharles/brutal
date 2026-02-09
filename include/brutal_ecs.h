@@ -83,11 +83,10 @@ struct ecs_s;
 typedef struct ecs_s ecs_t;
 
 // View of matching entities passed to system callbacks
-typedef struct ecs_view
+typedef struct
 {
     ecs_entity *entities;
     int count;
-    ecs_t *ecs;
 } ecs_view;
 
 typedef int (*ecs_system_fn)(ecs_t *ecs, ecs_view *view, void *udata);
@@ -96,27 +95,23 @@ typedef void (*ecs_wait_tasks_fn)(void *udata);
 
 #include <stdbool.h>
 
+// clang-format off
 // Component ID macros — derive a variable name from the type
-#define ECS_COMP_ID(Type) _ecs_comp_##Type
-#define ECS_DECLARE(Type) extern ecs_comp_t ECS_COMP_ID(Type)
-#define ECS_DEFINE(Type) ecs_comp_t ECS_COMP_ID(Type)
-#define ECS_REGISTER(ecs, Type)                                                \
-    (ECS_COMP_ID(Type) = ecs_register_component((ecs), (int)sizeof(Type)))
+#define ECS_COMP_ID(Type)       _ecs_comp_##Type
+#define ECS_DECLARE(Type)       extern ecs_comp_t ECS_COMP_ID(Type)
+#define ECS_DEFINE(Type)        ecs_comp_t ECS_COMP_ID(Type)
+#define ECS_REGISTER(ecs, Type) (ECS_COMP_ID(Type) = ecs_register_component((ecs), (int)sizeof(Type)))
 
 // Type-safe component access
-#define ECS_GET(ecs, entity, Type)                                             \
-    ((Type *)ecs_get((ecs), (entity), ECS_COMP_ID(Type)))
-#define ECS_ADD(ecs, entity, Type)                                             \
-    ((Type *)ecs_add((ecs), (entity), ECS_COMP_ID(Type)))
+#define ECS_GET(ecs, entity, Type) ((Type *)ecs_get((ecs), (entity), ECS_COMP_ID(Type)))
+#define ECS_ADD(ecs, entity, Type) ((Type *)ecs_add((ecs), (entity), ECS_COMP_ID(Type)))
 #define ECS_HAS(ecs, entity, Type) ecs_has((ecs), (entity), ECS_COMP_ID(Type))
-#define ECS_REMOVE(ecs, entity, Type)                                          \
-    ecs_remove((ecs), (entity), ECS_COMP_ID(Type))
+#define ECS_REMOVE(ecs, entity, Type) ecs_remove((ecs), (entity), ECS_COMP_ID(Type))
 
 // Type-safe system query
-#define ECS_REQUIRE(ecs, sys, Type)                                            \
-    ecs_sys_require((ecs), (sys), ECS_COMP_ID(Type))
-#define ECS_EXCLUDE(ecs, sys, Type)                                            \
-    ecs_sys_exclude((ecs), (sys), ECS_COMP_ID(Type))
+#define ECS_REQUIRE(ecs, sys, Type) ecs_sys_require((ecs), (sys), ECS_COMP_ID(Type))
+#define ECS_EXCLUDE(ecs, sys, Type) ecs_sys_exclude((ecs), (sys), ECS_COMP_ID(Type))
+// clang-format on
 
 // Core
 ecs_t *ecs_new();
@@ -797,7 +792,7 @@ static inline int ecs_run_system_task(void *args_v)
 
     if (matched_count == 0) { goto done; }
 
-    ecs_view view = { .entities = matched, .count = matched_count, .ecs = ecs };
+    ecs_view view = { .entities = matched, .count = matched_count };
     ret = s->fn(ecs, &view, s->udata);
 
 done:
