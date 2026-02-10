@@ -609,7 +609,7 @@ struct ecs_s
     int entity_bits_cap;
 
     // Components
-    ecs_pool pools[ECS_MAX_COMPONENTS];
+    ecs_pool components[ECS_MAX_COMPONENTS];
     int comp_count;
 
     // Systems
@@ -739,6 +739,14 @@ static inline void ecs_ensure_entity_bits(ecs_t *ecs, ecs_entity e)
 // -----------------------------------------------------------------------------
 //  System Matching
 
+static inline bool ecs_entity_matches_system(ecs_t *ecs, ecs_entity e, ecs_system *s)
+{
+    return e < ecs->entity_bits_cap &&
+           ecs_bs_contains(&ecs->entity_bits[e], &s->all_of) &&
+           (!ecs_bs_any(&s->none_of) ||
+            !ecs_bs_intersects(&ecs->entity_bits[e], &s->none_of));
+}
+
 static inline void ecs_rebuild_system_matched(ecs_t *ecs, ecs_system *s)
 {
     s->matched.count = 0;
@@ -747,13 +755,9 @@ static inline void ecs_rebuild_system_matched(ecs_t *ecs, ecs_system *s)
 
     if (ecs_bs_none(&s->all_of)) return;
 
-    bool has_excludes = ecs_bs_any(&s->none_of);
     int n = atomic_load(&ecs->next_entity);
     for (int e = 1; e < n && e < ecs->entity_bits_cap; e++) {
-        if (!ecs_bs_contains(&ecs->entity_bits[e], &s->all_of)) continue;
-        if (has_excludes && ecs_bs_intersects(&ecs->entity_bits[e], &s->none_of))
-            continue;
-        ecs_ss_insert(&s->matched, e);
+        if (ecs_entity_matches_system(ecs, e, s)) ecs_ss_insert(&s->matched, e);
     }
 }
 
@@ -764,13 +768,10 @@ static inline void ecs_sync_entity_systems(ecs_t *ecs, ecs_entity entity)
         if (ecs_bs_none(&s->all_of)) continue;
 
         bool in_set = ecs_ss_has(&s->matched, entity);
-        bool should_match = entity < ecs->entity_bits_cap &&
-                            ecs_bs_contains(&ecs->entity_bits[entity], &s->all_of) &&
-                            (!ecs_bs_any(&s->none_of) ||
-                             !ecs_bs_intersects(&ecs->entity_bits[entity], &s->none_of));
+        bool matches = ecs_entity_matches_system(ecs, entity, s);
 
-        if (should_match && !in_set) ecs_ss_insert(&s->matched, entity);
-        else if (!should_match && in_set) ecs_ss_remove(&s->matched, entity);
+        if (matches && !in_set) ecs_ss_insert(&s->matched, entity);
+        else if (!matches && in_set) ecs_ss_remove(&s->matched, entity);
     }
 }
 
@@ -781,7 +782,7 @@ static inline void *ecs_add_deferred(ecs_t *ecs, ecs_entity entity, ecs_comp_t c
 {
     assert(component < ecs->comp_count);
 
-    int element_size = ecs->pools[component].element_size;
+    int element_size = ecs->components[component].element_size;
     ecs_cmd_buffer *cb = ecs_current_cmd_buffer(ecs);
     void *data = ecs_cmd_alloc_data(cb, element_size);
     memset(data, 0, (size_t)element_size);
@@ -839,8 +840,8 @@ static inline void ecs_sync(ecs_t *ecs)
 
                 case ECS_CMD_ADD: {
                     assert(cmd->component < ecs->comp_count);
-                    void *dst = ecs_pool_add(&ecs->pools[cmd->component], target);
-                    int elem_size = ecs->pools[cmd->component].element_size;
+                    void *dst = ecs_pool_add(&ecs->components[cmd->component], target);
+                    int elem_size = ecs->components[cmd->component].element_size;
                     memcpy(dst, cmd->component_data, (size_t)elem_size);
                     ecs_ensure_entity_bits(ecs, target);
                     ecs_bs_set(&ecs->entity_bits[target], cmd->component);
@@ -850,7 +851,7 @@ static inline void ecs_sync(ecs_t *ecs)
 
                 case ECS_CMD_REMOVE:
                     assert(cmd->component < ecs->comp_count);
-                    ecs_pool_remove(&ecs->pools[cmd->component], target);
+                    ecs_pool_remove(&ecs->components[cmd->component], target);
                     if (target < ecs->entity_bits_cap)
                         ecs_bs_clear(&ecs->entity_bits[target], cmd->component);
                     ecs_sync_entity_systems(ecs, target);
@@ -919,7 +920,7 @@ void ecs_free(ecs_t *ecs)
     for (int i = 0; i < ecs->system_count; i++)
         ecs_ss_free(&ecs->systems[i].matched);
 
-    for (int i = 0; i < ecs->comp_count; i++) ecs_pool_free(&ecs->pools[i]);
+    for (int i = 0; i < ecs->comp_count; i++) ecs_pool_free(&ecs->components[i]);
     free(ecs->free_list_next);
     free(ecs->entity_bits);
 
@@ -964,7 +965,7 @@ void ecs_destroy(ecs_t *ecs, ecs_entity e)
         ecs_ss_remove(&ecs->systems[i].matched, e);
 
     for (int c = 0; c < ecs->comp_count; c++)
-        (void)ecs_pool_remove(&ecs->pools[c], e);
+        (void)ecs_pool_remove(&ecs->components[c], e);
 
     if (e < ecs->entity_bits_cap) ecs_bs_zero(&ecs->entity_bits[e]);
 
@@ -983,7 +984,7 @@ ecs_comp_t ecs_register_component(ecs_t *ecs, int size)
 {
     assert(ecs->comp_count < ECS_MAX_COMPONENTS);
     ecs_comp_t id = (ecs_comp_t)ecs->comp_count++;
-    ecs_pool_init(&ecs->pools[id], size);
+    ecs_pool_init(&ecs->components[id], size);
     return id;
 }
 
@@ -992,7 +993,7 @@ void *ecs_add(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
     if (ecs->in_progress) return ecs_add_deferred(ecs, entity, component);
 
     assert(component < ecs->comp_count);
-    void *ptr = ecs_pool_add(&ecs->pools[component], entity);
+    void *ptr = ecs_pool_add(&ecs->components[component], entity);
     ecs_ensure_entity_bits(ecs, entity);
     ecs_bs_set(&ecs->entity_bits[entity], component);
     ecs_sync_entity_systems(ecs, entity);
@@ -1007,7 +1008,7 @@ void ecs_remove(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
     }
 
     assert(component < ecs->comp_count);
-    (void)ecs_pool_remove(&ecs->pools[component], entity);
+    (void)ecs_pool_remove(&ecs->components[component], entity);
     if (entity < ecs->entity_bits_cap)
         ecs_bs_clear(&ecs->entity_bits[entity], component);
     ecs_sync_entity_systems(ecs, entity);
@@ -1016,7 +1017,7 @@ void ecs_remove(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
 void *ecs_get(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
 {
     assert(component < ecs->comp_count);
-    return ecs_pool_get(&ecs->pools[component], entity);
+    return ecs_pool_get(&ecs->components[component], entity);
 }
 
 bool ecs_has(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
