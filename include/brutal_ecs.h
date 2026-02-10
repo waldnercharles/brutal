@@ -683,7 +683,7 @@ static inline void ecs_set_tls_task_index(int task_index)
 static inline ecs_cmd_buffer *ecs_current_cmd_buffer(ecs_t *ecs)
 {
     int idx = ecs_tls_task_index;
-    if (idx < 0 || idx >= ecs->task_count) idx = 0;
+    assert(idx >= 0 && idx < ecs->task_count);
     return &ecs->cmd_buffers[idx];
 }
 
