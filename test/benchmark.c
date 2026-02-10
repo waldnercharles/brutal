@@ -137,11 +137,11 @@ BENCH_SETUP(setup)
     ecs = ecs_new();
     if (ctx->use_tpool && ctx->num_threads > 1) {
         tpool = tpool_new(ctx->num_threads, 0);
-        ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, ctx->num_threads);
+        ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, ctx->num_threads * 64);
     }
 
-    PosComponent = ECS_COMPONENT(ecs, v2d_t);
-    RectComponent = ECS_COMPONENT(ecs, rect_t);
+    PosComponent = ecs_register_component(ecs, sizeof(v2d_t));
+    RectComponent = ecs_register_component(ecs, sizeof(rect_t));
 }
 
 BENCH_SETUP(setup_destroy_with_two_components)
@@ -151,11 +151,11 @@ BENCH_SETUP(setup_destroy_with_two_components)
     ecs = ecs_new();
     if (ctx->use_tpool && ctx->num_threads > 1) {
         tpool = tpool_new(ctx->num_threads, 0);
-        ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, ctx->num_threads);
+        ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, ctx->num_threads * 64);
     }
 
-    PosComponent = ECS_COMPONENT(ecs, v2d_t);
-    RectComponent = ECS_COMPONENT(ecs, rect_t);
+    PosComponent = ecs_register_component(ecs, sizeof(v2d_t));
+    RectComponent = ecs_register_component(ecs, sizeof(rect_t));
 
     for (int i = 0; i < MAX_ENTITIES; i++) {
         ecs_entity entity = ecs_create(ecs);
@@ -171,10 +171,10 @@ BENCH_SETUP(setup_get)
     ecs = ecs_new();
     if (ctx->use_tpool && ctx->num_threads > 1) {
         tpool = tpool_new(ctx->num_threads, 0);
-        ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, ctx->num_threads);
+        ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, ctx->num_threads * 64);
     }
 
-    PosComponent = ECS_COMPONENT(ecs, v2d_t);
+    PosComponent = ecs_register_component(ecs, sizeof(v2d_t));
 
     for (int i = 0; i < MAX_ENTITIES; i++) {
         ecs_entity entity = ecs_create(ecs);
@@ -189,13 +189,13 @@ BENCH_SETUP(setup_three_systems)
     ecs = ecs_new();
     if (ctx->use_tpool && ctx->num_threads > 1) {
         tpool = tpool_new(ctx->num_threads, 0);
-        ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, ctx->num_threads);
+        ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, ctx->num_threads * 32);
     }
 
-    PosComponent = ECS_COMPONENT(ecs, v2d_t);
-    DirComponent = ECS_COMPONENT(ecs, v2d_t);
-    ComflabComponent = ECS_COMPONENT(ecs, comflab_t);
-    RectComponent = ECS_COMPONENT(ecs, rect_t);
+    PosComponent = ecs_register_component(ecs, sizeof(v2d_t));
+    DirComponent = ecs_register_component(ecs, sizeof(v2d_t));
+    ComflabComponent = ecs_register_component(ecs, sizeof(comflab_t));
+    RectComponent = ecs_register_component(ecs, sizeof(rect_t));
 
     MovementSystem = ecs_sys_create(ecs, movement_system, NULL);
     ecs_sys_require(ecs, MovementSystem, PosComponent);
@@ -259,7 +259,7 @@ BENCH_SETUP(setup_many_readers)
         ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, ctx->num_threads);
     }
 
-    PosComponent = ECS_COMPONENT(ecs, v2d_t);
+    PosComponent = ecs_register_component(ecs, sizeof(v2d_t));
 
     for (int i = 0; i < NUM_READER_SYSTEMS; i++) {
         ReaderSystems[i] = ecs_sys_create(ecs, reader_system, NULL);
@@ -302,7 +302,7 @@ BENCH_SETUP(setup_dependency_chain)
         ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, ctx->num_threads);
     }
 
-    PosComponent = ECS_COMPONENT(ecs, v2d_t);
+    PosComponent = ecs_register_component(ecs, sizeof(v2d_t));
 
     for (int i = 0; i < NUM_WRITER_SYSTEMS; i++) {
         WriterSystems[i] = ecs_sys_create(ecs, writer_system, NULL);
@@ -444,10 +444,10 @@ BENCH_SETUP(setup_mixed_workload)
         ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, ctx->num_threads);
     }
 
-    PosComponent = ECS_COMPONENT(ecs, v2d_t);
-    DirComponent = ECS_COMPONENT(ecs, v2d_t);
-    RectComponent = ECS_COMPONENT(ecs, rect_t);
-    ComflabComponent = ECS_COMPONENT(ecs, comflab_t);
+    PosComponent = ecs_register_component(ecs, sizeof(v2d_t));
+    DirComponent = ecs_register_component(ecs, sizeof(v2d_t));
+    RectComponent = ecs_register_component(ecs, sizeof(rect_t));
+    ComflabComponent = ecs_register_component(ecs, sizeof(comflab_t));
 
     // Stage 0: 6 readers (all non-conflicting)
     MixedSystems[0] = ecs_sys_create(ecs, pos_reader_1, NULL);
@@ -686,11 +686,11 @@ BENCH_SETUP(setup_deferred_workload)
         ecs_set_task_callbacks(ecs, bench_enqueue_cb, bench_wait_cb, NULL, ctx->num_threads);
     }
 
-    PosComponent = ECS_COMPONENT(ecs, v2d_t);
-    VelComponent = ECS_COMPONENT(ecs, v2d_t);
-    HealthComponent = ECS_COMPONENT(ecs, health_t);
-    EffectComponent = ECS_COMPONENT(ecs, effect_t);
-    LifetimeComponent = ECS_COMPONENT(ecs, lifetime_t);
+    PosComponent = ecs_register_component(ecs, sizeof(v2d_t));
+    VelComponent = ecs_register_component(ecs, sizeof(v2d_t));
+    HealthComponent = ecs_register_component(ecs, sizeof(health_t));
+    EffectComponent = ecs_register_component(ecs, sizeof(effect_t));
+    LifetimeComponent = ecs_register_component(ecs, sizeof(lifetime_t));
 
     // Stage 0: Readers + conditional spawners (all parallel, no writes to shared components)
     DeferredSystems[0] = ecs_sys_create(ecs, deferred_movement_system, NULL);
@@ -872,15 +872,15 @@ BENCH_CASE(bench_queue_destroy)
 
     for (int i = 0; i < MAX_ENTITIES; i++) { ecs_create(ecs); }
 
-    ecs_run_system(ecs, QueueDestroySystem, 0);
+    ecs_run_system(ecs, QueueDestroySystem);
 }
 
 BENCH_CASE(bench_three_systems)
 {
     (void)bench_run_ctx;
-    ecs_run_system(ecs, MovementSystem, 0);
-    ecs_run_system(ecs, ComflabSystem, 0);
-    ecs_run_system(ecs, BoundsSystem, 0);
+    ecs_run_system(ecs, MovementSystem);
+    ecs_run_system(ecs, ComflabSystem);
+    ecs_run_system(ecs, BoundsSystem);
 }
 
 BENCH_CASE(bench_three_systems_scheduler)
@@ -893,7 +893,7 @@ BENCH_CASE(bench_many_readers)
 {
     (void)bench_run_ctx;
     for (int i = 0; i < NUM_READER_SYSTEMS; i++)
-        ecs_run_system(ecs, ReaderSystems[i], 0);
+        ecs_run_system(ecs, ReaderSystems[i]);
 }
 
 BENCH_CASE(bench_many_readers_scheduler)
@@ -906,7 +906,7 @@ BENCH_CASE(bench_dependency_chain)
 {
     (void)bench_run_ctx;
     for (int i = 0; i < NUM_WRITER_SYSTEMS; i++)
-        ecs_run_system(ecs, WriterSystems[i], 0);
+        ecs_run_system(ecs, WriterSystems[i]);
 }
 
 BENCH_CASE(bench_dependency_chain_scheduler)
@@ -919,7 +919,7 @@ BENCH_CASE(bench_mixed_workload)
 {
     (void)bench_run_ctx;
     for (int i = 0; i < NUM_MIXED_SYSTEMS; i++)
-        ecs_run_system(ecs, MixedSystems[i], 0);
+        ecs_run_system(ecs, MixedSystems[i]);
 }
 
 BENCH_CASE(bench_mixed_workload_scheduler)
@@ -932,7 +932,7 @@ BENCH_CASE(bench_deferred_workload)
 {
     (void)bench_run_ctx;
     for (int i = 0; i < NUM_DEFERRED_SYSTEMS; i++)
-        ecs_run_system(ecs, DeferredSystems[i], 0);
+        ecs_run_system(ecs, DeferredSystems[i]);
 }
 
 BENCH_CASE(bench_deferred_workload_scheduler)
@@ -955,16 +955,16 @@ static void run_ecs_benchmarks(bench_ctx *ctx)
     /* RUN_BENCH_CASE(bench_add_assign, setup, teardown, ctx); */
     /* RUN_BENCH_CASE(bench_get, setup_get, teardown, ctx); */
     /* RUN_BENCH_CASE(bench_queue_destroy, setup, teardown, ctx); */
-    /* RUN_BENCH_CASE(bench_three_systems, setup_three_systems, teardown, ctx); */
-    /* RUN_BENCH_CASE(bench_three_systems_scheduler, setup_three_systems, teardown, ctx); */
+    RUN_BENCH_CASE(bench_three_systems, setup_three_systems, teardown, ctx);
+    // RUN_BENCH_CASE(bench_three_systems_scheduler, setup_three_systems, teardown, ctx);
     /* RUN_BENCH_CASE(bench_many_readers, setup_many_readers, teardown, ctx); */
     /* RUN_BENCH_CASE(bench_many_readers_scheduler, setup_many_readers, teardown, ctx); */
     /* RUN_BENCH_CASE(bench_dependency_chain, setup_dependency_chain, teardown, ctx); */
     /* RUN_BENCH_CASE(bench_dependency_chain_scheduler, setup_dependency_chain, teardown, ctx); */
     /* RUN_BENCH_CASE(bench_mixed_workload, setup_mixed_workload, teardown, ctx); */
     /* RUN_BENCH_CASE(bench_mixed_workload_scheduler, setup_mixed_workload, teardown, ctx); */
-    RUN_BENCH_CASE(bench_deferred_workload, setup_deferred_workload, teardown, ctx);
-    RUN_BENCH_CASE(bench_deferred_workload_scheduler, setup_deferred_workload, teardown, ctx);
+    // RUN_BENCH_CASE(bench_deferred_workload, setup_deferred_workload, teardown, ctx);
+    // RUN_BENCH_CASE(bench_deferred_workload_scheduler, setup_deferred_workload, teardown, ctx);
 }
 
 /*=============================================================================
@@ -990,10 +990,10 @@ int main()
     bench_set_iterations(32);
     bench_set_warmup(4);
 
-    // bench_ctx single = { .num_threads = 1, .use_tpool = 0 };
+    bench_ctx single = { .num_threads = 1, .use_tpool = 0 };
     bench_ctx multi = { .num_threads = 8, .use_tpool = 1 };
 
-    // RUN_BENCH_SUITE(suite_single_threaded, &single);
+    RUN_BENCH_SUITE(suite_single_threaded, &single);
     RUN_BENCH_SUITE(suite_multi_threaded, &multi);
 
     bench_print_stats();

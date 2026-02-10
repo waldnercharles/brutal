@@ -61,8 +61,8 @@ TEST_CASE(test_register_component)
 {
     ecs_t *ecs = ecs_new();
 
-    ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
-    ecs_comp_t vel_comp = ECS_COMPONENT(ecs, Velocity);
+    ecs_comp_t pos_comp = ecs_register_component(ecs, sizeof(Position));
+    ecs_comp_t vel_comp = ecs_register_component(ecs, sizeof(Velocity));
 
     REQUIRE(pos_comp != vel_comp);
 
@@ -74,7 +74,7 @@ TEST_CASE(test_add_get_component)
 {
     ecs_t *ecs = ecs_new();
 
-    ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
+    ecs_comp_t pos_comp = ecs_register_component(ecs, sizeof(Position));
     ecs_entity e = ecs_create(ecs);
 
     Position *pos = (Position *)ecs_add(ecs, e, pos_comp);
@@ -96,8 +96,8 @@ TEST_CASE(test_has_component)
 {
     ecs_t *ecs = ecs_new();
 
-    ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
-    ecs_comp_t vel_comp = ECS_COMPONENT(ecs, Velocity);
+    ecs_comp_t pos_comp = ecs_register_component(ecs, sizeof(Position));
+    ecs_comp_t vel_comp = ecs_register_component(ecs, sizeof(Velocity));
     ecs_entity e = ecs_create(ecs);
 
     REQUIRE(!ecs_has(ecs, e, pos_comp));
@@ -114,7 +114,7 @@ TEST_CASE(test_remove_component)
 {
     ecs_t *ecs = ecs_new();
 
-    ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
+    ecs_comp_t pos_comp = ecs_register_component(ecs, sizeof(Position));
     ecs_entity e = ecs_create(ecs);
 
     ecs_add(ecs, e, pos_comp);
@@ -131,8 +131,8 @@ TEST_CASE(test_multiple_components_per_entity)
 {
     ecs_t *ecs = ecs_new();
 
-    ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
-    ecs_comp_t vel_comp = ECS_COMPONENT(ecs, Velocity);
+    ecs_comp_t pos_comp = ecs_register_component(ecs, sizeof(Position));
+    ecs_comp_t vel_comp = ecs_register_component(ecs, sizeof(Velocity));
     ecs_entity e = ecs_create(ecs);
 
     Position *pos = (Position *)ecs_add(ecs, e, pos_comp);
@@ -170,7 +170,7 @@ TEST_CASE(test_add_system)
 {
     ecs_t *ecs = ecs_new();
 
-    ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
+    ecs_comp_t pos_comp = ecs_register_component(ecs, sizeof(Position));
 
     ecs_sys_t sys = ecs_sys_create(ecs, test_system_fn, NULL);
     ecs_sys_require(ecs, sys, pos_comp);
@@ -185,7 +185,7 @@ TEST_CASE(test_system_execution)
 {
     ecs_t *ecs = ecs_new();
 
-    ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
+    ecs_comp_t pos_comp = ecs_register_component(ecs, sizeof(Position));
 
     ecs_entity e1 = ecs_create(ecs);
     ecs_entity e2 = ecs_create(ecs);
@@ -231,8 +231,8 @@ TEST_CASE(test_system_with_query)
 {
     ecs_t *ecs = ecs_new();
 
-    ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
-    ecs_comp_t vel_comp = ECS_COMPONENT(ecs, Velocity);
+    ecs_comp_t pos_comp = ecs_register_component(ecs, sizeof(Position));
+    ecs_comp_t vel_comp = ecs_register_component(ecs, sizeof(Velocity));
 
     ecs_entity e = ecs_create(ecs);
     Position *pos = (Position *)ecs_add(ecs, e, pos_comp);
@@ -261,8 +261,8 @@ TEST_CASE(test_system_none_of_filter)
 {
     ecs_t *ecs = ecs_new();
 
-    ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
-    ecs_comp_t vel_comp = ECS_COMPONENT(ecs, Velocity);
+    ecs_comp_t pos_comp = ecs_register_component(ecs, sizeof(Position));
+    ecs_comp_t vel_comp = ecs_register_component(ecs, sizeof(Velocity));
 
     ecs_entity e1 = ecs_create(ecs);
     ecs_entity e2 = ecs_create(ecs);
@@ -316,7 +316,7 @@ TEST_CASE(test_selective_group_execution)
 {
     ecs_t *ecs = ecs_new();
 
-    ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
+    ecs_comp_t pos_comp = ecs_register_component(ecs, sizeof(Position));
 
     // Create test entities
     for (int i = 0; i < 10; i++) {
@@ -438,8 +438,8 @@ TEST_CASE(test_stage_sync_applies_deferred_adds)
 {
     ecs_t *ecs = ecs_new();
 
-    ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
-    ecs_comp_t vel_comp = ECS_COMPONENT(ecs, Velocity);
+    ecs_comp_t pos_comp = ecs_register_component(ecs, sizeof(Position));
+    ecs_comp_t vel_comp = ecs_register_component(ecs, sizeof(Velocity));
 
     for (int i = 0; i < 8; i++) {
         ecs_entity e = ecs_create(ecs);
@@ -490,7 +490,7 @@ TEST_CASE(test_system_udata_roundtrip)
 {
     ecs_t *ecs = ecs_new();
 
-    ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
+    ecs_comp_t pos_comp = ecs_register_component(ecs, sizeof(Position));
     for (int i = 0; i < 3; i++) {
         ecs_entity e = ecs_create(ecs);
         ecs_add(ecs, e, pos_comp);
@@ -566,8 +566,8 @@ TEST_CASE(test_multithreading_basic)
     ecs_set_task_callbacks(ecs, tpool_enqueue_adapter, tpool_wait_adapter, NULL, NUM_THREADS);
 
     // Register components
-    ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
-    ecs_comp_t vel_comp = ECS_COMPONENT(ecs, Velocity);
+    ecs_comp_t pos_comp = ecs_register_component(ecs, sizeof(Position));
+    ecs_comp_t vel_comp = ecs_register_component(ecs, sizeof(Velocity));
 
     // Create entities
     for (int i = 0; i < NUM_ENTITIES; i++) {
@@ -620,8 +620,8 @@ TEST_CASE(test_multithreading_verify_parallel_execution)
     ecs_t *ecs = ecs_new();
     ecs_set_task_callbacks(ecs, tpool_enqueue_adapter, tpool_wait_adapter, NULL, NUM_THREADS);
 
-    ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
-    ecs_comp_t vel_comp = ECS_COMPONENT(ecs, Velocity);
+    ecs_comp_t pos_comp = ecs_register_component(ecs, sizeof(Position));
+    ecs_comp_t vel_comp = ecs_register_component(ecs, sizeof(Velocity));
 
     for (int i = 0; i < NUM_ENTITIES; i++) {
         ecs_entity e = ecs_create(ecs);
@@ -697,7 +697,7 @@ TEST_CASE(test_mt_independent_systems_parallel)
     ecs_t *ecs = ecs_new();
     ecs_set_task_callbacks(ecs, tpool_enqueue_adapter, tpool_wait_adapter, NULL, NUM_THREADS);
 
-    ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
+    ecs_comp_t pos_comp = ecs_register_component(ecs, sizeof(Position));
 
     for (int i = 0; i < NUM_ENTITIES; i++) {
         ecs_entity e = ecs_create(ecs);
@@ -774,8 +774,8 @@ TEST_CASE(test_mt_conflicting_systems_staged)
     ecs_t *ecs = ecs_new();
     ecs_set_task_callbacks(ecs, tpool_enqueue_adapter, tpool_wait_adapter, NULL, NUM_THREADS);
 
-    ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
-    ecs_comp_t vel_comp = ECS_COMPONENT(ecs, Velocity);
+    ecs_comp_t pos_comp = ecs_register_component(ecs, sizeof(Position));
+    ecs_comp_t vel_comp = ecs_register_component(ecs, sizeof(Velocity));
 
     for (int i = 0; i < NUM_ENTITIES; i++) {
         ecs_entity e = ecs_create(ecs);
@@ -831,7 +831,7 @@ TEST_CASE(test_mt_many_systems_batching)
     ecs_t *ecs = ecs_new();
     ecs_set_task_callbacks(ecs, tpool_enqueue_adapter, tpool_wait_adapter, NULL, NUM_THREADS);
 
-    ecs_comp_t pos_comp = ECS_COMPONENT(ecs, Position);
+    ecs_comp_t pos_comp = ecs_register_component(ecs, sizeof(Position));
 
     for (int i = 0; i < NUM_ENTITIES; i++) {
         ecs_entity e = ecs_create(ecs);

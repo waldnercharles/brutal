@@ -57,7 +57,7 @@
 //  Configuration
 
 #ifndef ECS_MAX_COMPONENTS
-#define ECS_MAX_COMPONENTS 256
+#define ECS_MAX_COMPONENTS 64
 #endif
 
 #ifndef ECS_MAX_SYSTEMS
@@ -148,7 +148,7 @@ void ecs_sys_set_udata(ecs_t *ecs, ecs_sys_t sys, void *udata);
 void *ecs_sys_get_udata(ecs_t *ecs, ecs_sys_t sys);
 
 // Execution
-int ecs_run_system(ecs_t *ecs, ecs_sys_t sys, float dt);
+int ecs_run_system(ecs_t *ecs, ecs_sys_t sys);
 int ecs_progress(ecs_t *ecs, int group_mask);
 
 #endif // BRUTAL_ECS_H
@@ -159,7 +159,6 @@ int ecs_progress(ecs_t *ecs, int group_mask);
 #ifdef BRUTAL_ECS_IMPLEMENTATION
 
 #include <assert.h>
-#include <limits.h>
 #include <stdalign.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -167,10 +166,6 @@ int ecs_progress(ecs_t *ecs, int group_mask);
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifndef ECS_SCRATCH_BUFFER_SIZE
-#define ECS_SCRATCH_BUFFER_SIZE (1024 * 1024)
-#endif
 
 #ifndef ECS_CMD_BUFFER_CAPACITY
 #define ECS_CMD_BUFFER_CAPACITY 1024
@@ -191,10 +186,18 @@ static inline int ecs_ctz64(uint64_t x)
     _BitScanForward64(&index, x);
     return (int)index;
 }
+static inline int ecs_popcnt64(uint64_t x)
+{
+    return (int)__popcnt64(x);
+}
 #elif defined(__GNUC__) || defined(__clang__)
 static inline int ecs_ctz64(uint64_t x)
 {
     return __builtin_ctzll(x);
+}
+static inline int ecs_popcnt64(uint64_t x)
+{
+    return __builtin_popcountll(x);
 }
 #else
 // clang-format off
@@ -209,8 +212,88 @@ static inline int ecs_ctz64(uint64_t x)
     if ((x & 0x0000000000000001ull) == 0) { n += 1; }
     return n;
 }
+static inline int ecs_popcnt64(uint64_t x)
+{
+    x = x - ((x >> 1) & 0x5555555555555555ull);
+    x = (x & 0x3333333333333333ull) + ((x >> 2) & 0x3333333333333333ull);
+    return (int)(((x + (x >> 4)) & 0x0F0F0F0F0F0F0F0Full) * 0x0101010101010101ull >> 56);
+}
 // clang-format on
 #endif
+
+#if ECS_BS_WORDS == 1
+
+typedef uint64_t ecs_bitset;
+
+static inline void ecs_bs_zero(ecs_bitset *bs)
+{
+    *bs = 0;
+}
+static inline bool ecs_bs_any(ecs_bitset *bs)
+{
+    return *bs != 0;
+}
+static inline bool ecs_bs_none(ecs_bitset *bs)
+{
+    return *bs == 0;
+}
+static inline void ecs_bs_copy(ecs_bitset *dst, ecs_bitset *src)
+{
+    *dst = *src;
+}
+
+static inline void ecs_bs_set(ecs_bitset *bs, int bit)
+{
+    assert(bit < ECS_MAX_COMPONENTS);
+    *bs |= (1ull << bit);
+}
+
+static inline void ecs_bs_clear(ecs_bitset *bs, int bit)
+{
+    assert(bit < ECS_MAX_COMPONENTS);
+    *bs &= ~(1ull << bit);
+}
+
+static inline bool ecs_bs_test(ecs_bitset *bs, int bit)
+{
+    assert(bit < ECS_MAX_COMPONENTS);
+    return (*bs >> bit) & 1ull;
+}
+
+static inline void ecs_bs_or(ecs_bitset *dst, ecs_bitset *a, ecs_bitset *b)
+{
+    *dst = *a | *b;
+}
+static inline void ecs_bs_and(ecs_bitset *dst, ecs_bitset *a, ecs_bitset *b)
+{
+    *dst = *a & *b;
+}
+static inline void ecs_bs_andnot(ecs_bitset *dst, ecs_bitset *a, ecs_bitset *b)
+{
+    *dst = *a & ~*b;
+}
+static inline bool ecs_bs_intersects(ecs_bitset *a, ecs_bitset *b)
+{
+    return (*a & *b) != 0;
+}
+static inline void ecs_bs_or_into(ecs_bitset *dst, ecs_bitset *a)
+{
+    *dst |= *a;
+}
+static inline int ecs_bs_popcount(ecs_bitset *bs)
+{
+    return ecs_popcnt64(*bs);
+}
+static inline bool ecs_bs_contains(ecs_bitset *a, ecs_bitset *b)
+{
+    return (*a & *b) == *b;
+}
+
+#define ECS_BS_FOREACH(bs, bit_var)                                            \
+    for (uint64_t _w = *(bs); _w; _w &= (_w - 1ull))                           \
+        for (int bit_var = ecs_ctz64(_w), _once = 1; _once; _once = 0)
+
+#else
 
 typedef struct
 {
@@ -288,6 +371,26 @@ static inline void ecs_bs_or_into(ecs_bitset *dst, ecs_bitset *a)
     for (int i = 0; i < ECS_BS_WORDS; i++) dst->words[i] |= a->words[i];
 }
 
+static inline int ecs_bs_popcount(ecs_bitset *bs)
+{
+    int n = 0;
+    for (int i = 0; i < ECS_BS_WORDS; i++) n += ecs_popcnt64(bs->words[i]);
+    return n;
+}
+static inline bool ecs_bs_contains(ecs_bitset *a, ecs_bitset *b)
+{
+    for (int i = 0; i < ECS_BS_WORDS; i++)
+        if ((a->words[i] & b->words[i]) != b->words[i]) return false;
+    return true;
+}
+
+#define ECS_BS_FOREACH(bs, bit_var)                                            \
+    for (int _wi = 0; _wi < ECS_BS_WORDS; _wi++)                               \
+        for (uint64_t _w = (bs)->words[_wi]; _w; _w &= (_w - 1ull))            \
+            for (int bit_var = ecs_ctz64(_w) + (_wi * 64), _once = 1; _once; _once = 0)
+
+#endif
+
 // -----------------------------------------------------------------------------
 //  Sparse Set
 
@@ -318,7 +421,7 @@ static inline void ecs_ss_reserve_sparse(ecs_sparse_set *set, int need)
     int old = set->sparse_cap;
     int cap = old ? old : 1;
     while (cap < need) cap <<= 1;
-    set->sparse = (int *)realloc(set->sparse, cap * sizeof(int));
+    set->sparse = realloc(set->sparse, cap * sizeof(int));
     assert(set->sparse);
     memset(set->sparse + old, 0, (cap - old) * sizeof(int));
     set->sparse_cap = cap;
@@ -329,7 +432,7 @@ static inline void ecs_ss_reserve_dense(ecs_sparse_set *set, int need)
     if (need <= set->dense_cap) return;
     int cap = set->dense_cap ? set->dense_cap : 1;
     while (cap < need) cap <<= 1;
-    set->dense = (ecs_entity *)realloc(set->dense, cap * sizeof(ecs_entity));
+    set->dense = realloc(set->dense, cap * sizeof(ecs_entity));
     assert(set->dense);
     set->dense_cap = cap;
 }
@@ -347,7 +450,7 @@ static inline int ecs_ss_index_of(ecs_sparse_set *s, ecs_entity entity)
 
 static inline bool ecs_ss_insert(ecs_sparse_set *set, ecs_entity entity)
 {
-    ecs_ss_reserve_sparse(set, (int)entity + 1);
+    ecs_ss_reserve_sparse(set, entity + 1);
     if (set->sparse[entity]) return false;
     ecs_ss_reserve_dense(set, set->count + 1);
     int idx = set->count++;
@@ -358,7 +461,7 @@ static inline bool ecs_ss_insert(ecs_sparse_set *set, ecs_entity entity)
 
 static inline bool ecs_ss_remove(ecs_sparse_set *set, ecs_entity entity)
 {
-    if (entity >= (ecs_entity)set->sparse_cap) return false;
+    if (entity >= set->sparse_cap) return false;
     int idx = set->sparse[entity];
     if (!idx) return false;
 
@@ -441,7 +544,6 @@ static inline bool ecs_pool_remove(ecs_pool *pool, ecs_entity e)
 
 static inline void *ecs_pool_get(ecs_pool *pool, ecs_entity e)
 {
-    if (!ecs_ss_has(&pool->set, e)) return NULL;
     return ecs_pool_ptr_at(pool, ecs_ss_index_of(&pool->set, e));
 }
 
@@ -481,6 +583,7 @@ typedef struct
 {
     ecs_bitset all_of;
     ecs_bitset none_of;
+    ecs_sparse_set matched;
     int group;
     ecs_system_fn fn;
     void *udata;
@@ -493,8 +596,6 @@ typedef struct
     ecs_t *ecs;
     int sys_index;
     int task_index;
-    uint8_t *scratch_buffer;
-    int scratch_capacity;
 } ecs_task_args;
 
 struct ecs_s
@@ -504,6 +605,8 @@ struct ecs_s
     _Atomic(int) free_list_head;
     int *free_list_next;
     int free_list_capacity;
+    ecs_bitset *entity_bits;
+    int entity_bits_cap;
 
     // Components
     ecs_pool pools[ECS_MAX_COMPONENTS];
@@ -522,9 +625,6 @@ struct ecs_s
     bool in_progress;
 
     ecs_task_args task_args_storage[ECS_MT_MAX_TASKS];
-    uint8_t *task_scratch[ECS_MT_MAX_TASKS];
-    int task_scratch_capacity[ECS_MT_MAX_TASKS];
-
     ecs_cmd_buffer cmd_buffers[ECS_MT_MAX_TASKS];
 };
 
@@ -535,11 +635,11 @@ static inline void ecs_cmd_buffer_init(ecs_cmd_buffer *cb, int initial_capacity)
 {
     memset(cb, 0, sizeof(*cb));
     cb->capacity = initial_capacity;
-    cb->commands = (ecs_cmd *)malloc((size_t)initial_capacity * sizeof(ecs_cmd));
+    cb->commands = malloc((size_t)initial_capacity * sizeof(ecs_cmd));
     assert(cb->commands);
 
     cb->data_capacity = 1024 * 1024;
-    cb->data_buffer = (uint8_t *)malloc((size_t)cb->data_capacity);
+    cb->data_buffer = malloc((size_t)cb->data_capacity);
     assert(cb->data_buffer);
 }
 
@@ -553,7 +653,7 @@ static inline void ecs_cmd_buffer_free(ecs_cmd_buffer *cb)
 static inline void ecs_cmd_buffer_grow(ecs_cmd_buffer *cb)
 {
     int new_cap = cb->capacity * 2;
-    cb->commands = (ecs_cmd *)realloc(cb->commands, (size_t)new_cap * sizeof(ecs_cmd));
+    cb->commands = realloc(cb->commands, (size_t)new_cap * sizeof(ecs_cmd));
     assert(cb->commands);
     cb->capacity = new_cap;
 }
@@ -563,7 +663,7 @@ static inline void *ecs_cmd_alloc_data(ecs_cmd_buffer *cb, int size)
     if (cb->data_offset + size > cb->data_capacity) {
         int new_cap = cb->data_capacity * 2;
         while (new_cap < cb->data_offset + size) new_cap *= 2;
-        cb->data_buffer = (uint8_t *)realloc(cb->data_buffer, (size_t)new_cap);
+        cb->data_buffer = realloc(cb->data_buffer, (size_t)new_cap);
         assert(cb->data_buffer);
         cb->data_capacity = new_cap;
     }
@@ -605,7 +705,7 @@ static inline ecs_entity ecs_free_list_pop(ecs_t *ecs)
         if (old_head == -1) return 0;
         new_head = ecs->free_list_next[old_head];
     } while (!atomic_compare_exchange_weak(&ecs->free_list_head, &old_head, new_head));
-    return (ecs_entity)old_head;
+    return old_head;
 }
 
 static inline void ecs_free_list_push(ecs_t *ecs, ecs_entity entity)
@@ -614,7 +714,64 @@ static inline void ecs_free_list_push(ecs_t *ecs, ecs_entity entity)
     do {
         old_head = atomic_load(&ecs->free_list_head);
         ecs->free_list_next[entity] = old_head;
-    } while (!atomic_compare_exchange_weak(&ecs->free_list_head, &old_head, (int)entity));
+    } while (!atomic_compare_exchange_weak(&ecs->free_list_head, &old_head, entity));
+}
+
+// -----------------------------------------------------------------------------
+//  Entity Bitsets
+
+static inline void ecs_ensure_entity_bits(ecs_t *ecs, ecs_entity e)
+{
+    int need = e + 1;
+    if (need <= ecs->entity_bits_cap) return;
+    int cap = ecs->entity_bits_cap ? ecs->entity_bits_cap : 1;
+    while (cap < need) cap <<= 1;
+    ecs->entity_bits = realloc(ecs->entity_bits, (size_t)cap * sizeof(ecs_bitset));
+    assert(ecs->entity_bits);
+    memset(
+        ecs->entity_bits + ecs->entity_bits_cap,
+        0,
+        (size_t)(cap - ecs->entity_bits_cap) * sizeof(ecs_bitset)
+    );
+    ecs->entity_bits_cap = cap;
+}
+
+// -----------------------------------------------------------------------------
+//  System Matching
+
+static inline void ecs_rebuild_system_matched(ecs_t *ecs, ecs_system *s)
+{
+    s->matched.count = 0;
+    if (s->matched.sparse)
+        memset(s->matched.sparse, 0, (size_t)s->matched.sparse_cap * sizeof(int));
+
+    if (ecs_bs_none(&s->all_of)) return;
+
+    bool has_excludes = ecs_bs_any(&s->none_of);
+    int n = atomic_load(&ecs->next_entity);
+    for (int e = 1; e < n && e < ecs->entity_bits_cap; e++) {
+        if (!ecs_bs_contains(&ecs->entity_bits[e], &s->all_of)) continue;
+        if (has_excludes && ecs_bs_intersects(&ecs->entity_bits[e], &s->none_of))
+            continue;
+        ecs_ss_insert(&s->matched, e);
+    }
+}
+
+static inline void ecs_sync_entity_systems(ecs_t *ecs, ecs_entity entity)
+{
+    for (int i = 0; i < ecs->system_count; i++) {
+        ecs_system *s = &ecs->systems[i];
+        if (ecs_bs_none(&s->all_of)) continue;
+
+        bool in_set = ecs_ss_has(&s->matched, entity);
+        bool should_match = entity < ecs->entity_bits_cap &&
+                            ecs_bs_contains(&ecs->entity_bits[entity], &s->all_of) &&
+                            (!ecs_bs_any(&s->none_of) ||
+                             !ecs_bs_intersects(&ecs->entity_bits[entity], &s->none_of));
+
+        if (should_match && !in_set) ecs_ss_insert(&s->matched, entity);
+        else if (!should_match && in_set) ecs_ss_remove(&s->matched, entity);
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -662,6 +819,15 @@ static inline void ecs_sync(ecs_t *ecs)
 {
     assert(!ecs->in_progress);
 
+    bool any_cmds = false;
+    for (int t = 0; t < ecs->task_count; t++) {
+        if (ecs->cmd_buffers[t].count) {
+            any_cmds = true;
+            break;
+        }
+    }
+    if (!any_cmds) return;
+
     for (int t = 0; t < ecs->task_count; t++) {
         ecs_cmd_buffer *cb = &ecs->cmd_buffers[t];
         for (int i = 0; i < cb->count; i++) {
@@ -676,12 +842,18 @@ static inline void ecs_sync(ecs_t *ecs)
                     void *dst = ecs_pool_add(&ecs->pools[cmd->component], target);
                     int elem_size = ecs->pools[cmd->component].element_size;
                     memcpy(dst, cmd->component_data, (size_t)elem_size);
+                    ecs_ensure_entity_bits(ecs, target);
+                    ecs_bs_set(&ecs->entity_bits[target], cmd->component);
+                    ecs_sync_entity_systems(ecs, target);
                     break;
                 }
 
                 case ECS_CMD_REMOVE:
                     assert(cmd->component < ecs->comp_count);
                     ecs_pool_remove(&ecs->pools[cmd->component], target);
+                    if (target < ecs->entity_bits_cap)
+                        ecs_bs_clear(&ecs->entity_bits[target], cmd->component);
+                    ecs_sync_entity_systems(ecs, target);
                     break;
             }
         }
@@ -691,111 +863,29 @@ static inline void ecs_sync(ecs_t *ecs)
     }
 }
 
-// -----------------------------------------------------------------------------
-//  Matching
-
-static inline bool ecs_entity_has_all_of(ecs_t *ecs, ecs_entity e, ecs_bitset *all_of)
-{
-    for (int w = 0; w < ECS_BS_WORDS; w++) {
-        uint64_t word = all_of->words[w];
-        while (word) {
-            int bit = ecs_ctz64(word) + (w * 64);
-            if (bit >= ecs->comp_count) return false;
-            if (!ecs_ss_has(&ecs->pools[bit].set, e)) return false;
-            word &= (word - 1ull);
-        }
-    }
-    return true;
-}
-
-static inline bool ecs_entity_has_any_of(ecs_t *ecs, ecs_entity e, ecs_bitset *any_of)
-{
-    for (int w = 0; w < ECS_BS_WORDS; w++) {
-        uint64_t word = any_of->words[w];
-        while (word) {
-            int bit = ecs_ctz64(word) + (w * 64);
-            if (bit < ecs->comp_count && ecs_ss_has(&ecs->pools[bit].set, e))
-                return true;
-            word &= (word - 1ull);
-        }
-    }
-    return false;
-}
-
-static inline ecs_comp_t ecs_pick_driver(ecs_t *ecs, ecs_bitset *all_of)
-{
-    ecs_comp_t best = (ecs_comp_t)-1;
-    int best_n = INT_MAX;
-
-    for (int w = 0; w < ECS_BS_WORDS; w++) {
-        uint64_t word = all_of->words[w];
-        while (word) {
-            int bit = ecs_ctz64(word) + (w * 64);
-            if (bit < ecs->comp_count) {
-                int n = ecs->pools[bit].set.count;
-                if (n < best_n) {
-                    best = (ecs_comp_t)bit;
-                    best_n = n;
-                }
-            }
-            word &= (word - 1ull);
-        }
-    }
-    return best;
-}
-
 static inline int ecs_run_system_task(void *args_v)
 {
     ecs_task_args *args = (ecs_task_args *)args_v;
     ecs_t *ecs = args->ecs;
     ecs_system *s = &ecs->systems[args->sys_index];
 
-    int ret = 0;
+    int count = s->matched.count;
+    if (!count) return 0;
+
     ecs_set_tls_task_index(args->task_index);
-
-    ecs_comp_t drive = ecs_pick_driver(ecs, &s->all_of);
-    if (drive == (ecs_comp_t)-1) { goto done; }
-
-    ecs_sparse_set *set = &ecs->pools[drive].set;
-    int entity_count = set->count;
-    if (!entity_count) { goto done; }
 
     int task_count = ecs->task_count;
     int task_idx = args->task_index;
-    int start = (entity_count * task_idx) / task_count;
-    int end = (entity_count * (task_idx + 1)) / task_count;
+    int start = (count * task_idx) / task_count;
+    int end = (count * (task_idx + 1)) / task_count;
     int slice_count = end - start;
 
-    int needed = slice_count * sizeof(ecs_entity);
-    if (needed > args->scratch_capacity) {
-        int new_capacity = needed * 2;
-        args->scratch_buffer = (uint8_t *)realloc(args->scratch_buffer, new_capacity);
-        assert(args->scratch_buffer);
-        args->scratch_capacity = new_capacity;
-
-        ecs->task_scratch[args->task_index] = args->scratch_buffer;
-        ecs->task_scratch_capacity[args->task_index] = new_capacity;
+    int ret = 0;
+    if (slice_count > 0) {
+        ecs_view view = { .entities = &s->matched.dense[start], .count = slice_count };
+        ret = s->fn(ecs, &view, s->udata);
     }
 
-    ecs_entity *matched = (ecs_entity *)args->scratch_buffer;
-    int matched_count = 0;
-
-    ecs_entity *dense = set->dense;
-    bool any_excluded = ecs_bs_any(&s->none_of);
-    for (int i = start; i < end; i++) {
-        ecs_entity e = dense[i];
-        if (!ecs_entity_has_all_of(ecs, e, &s->all_of)) continue;
-        if (any_excluded && ecs_entity_has_any_of(ecs, e, &s->none_of))
-            continue;
-        matched[matched_count++] = e;
-    }
-
-    if (matched_count == 0) { goto done; }
-
-    ecs_view view = { .entities = matched, .count = matched_count };
-    ret = s->fn(ecs, &view, s->udata);
-
-done:
     ecs_set_tls_task_index(0);
     return ret;
 }
@@ -805,7 +895,7 @@ done:
 
 ecs_t *ecs_new()
 {
-    ecs_t *ecs = (ecs_t *)malloc(sizeof(ecs_t));
+    ecs_t *ecs = malloc(sizeof(ecs_t));
     assert(ecs);
 
     memset(ecs, 0, sizeof(*ecs));
@@ -814,14 +904,8 @@ ecs_t *ecs_new()
     ecs->task_count = 1;
 
     ecs->free_list_capacity = 1024;
-    ecs->free_list_next = (int *)malloc((size_t)ecs->free_list_capacity * sizeof(int));
+    ecs->free_list_next = malloc((size_t)ecs->free_list_capacity * sizeof(int));
     assert(ecs->free_list_next);
-
-    for (int i = 0; i < ECS_MT_MAX_TASKS; i++) {
-        ecs->task_scratch[i] = (uint8_t *)malloc(ECS_SCRATCH_BUFFER_SIZE);
-        assert(ecs->task_scratch[i]);
-        ecs->task_scratch_capacity[i] = ECS_SCRATCH_BUFFER_SIZE;
-    }
 
     for (int i = 0; i < ECS_MT_MAX_TASKS; i++) {
         ecs_cmd_buffer_init(&ecs->cmd_buffers[i], ECS_CMD_BUFFER_CAPACITY);
@@ -832,10 +916,12 @@ ecs_t *ecs_new()
 
 void ecs_free(ecs_t *ecs)
 {
+    for (int i = 0; i < ecs->system_count; i++)
+        ecs_ss_free(&ecs->systems[i].matched);
+
     for (int i = 0; i < ecs->comp_count; i++) ecs_pool_free(&ecs->pools[i]);
     free(ecs->free_list_next);
-
-    for (int i = 0; i < ECS_MT_MAX_TASKS; i++) { free(ecs->task_scratch[i]); }
+    free(ecs->entity_bits);
 
     for (int i = 0; i < ECS_MT_MAX_TASKS; i++) {
         ecs_cmd_buffer_free(&ecs->cmd_buffers[i]);
@@ -863,8 +949,8 @@ void ecs_set_task_callbacks(
 ecs_entity ecs_create(ecs_t *ecs)
 {
     ecs_entity e = ecs_free_list_pop(ecs);
-    if (e) return e;
-    return atomic_fetch_add(&ecs->next_entity, 1);
+    if (!e) e = atomic_fetch_add(&ecs->next_entity, 1);
+    return e;
 }
 
 void ecs_destroy(ecs_t *ecs, ecs_entity e)
@@ -874,14 +960,18 @@ void ecs_destroy(ecs_t *ecs, ecs_entity e)
         return;
     }
 
+    for (int i = 0; i < ecs->system_count; i++)
+        ecs_ss_remove(&ecs->systems[i].matched, e);
+
     for (int c = 0; c < ecs->comp_count; c++)
         (void)ecs_pool_remove(&ecs->pools[c], e);
 
-    if ((int)e >= ecs->free_list_capacity) {
+    if (e < ecs->entity_bits_cap) ecs_bs_zero(&ecs->entity_bits[e]);
+
+    if (e >= ecs->free_list_capacity) {
         int new_cap = ecs->free_list_capacity * 2;
-        while (new_cap <= (int)e) new_cap *= 2;
-        ecs->free_list_next = (int *)
-            realloc(ecs->free_list_next, (size_t)new_cap * sizeof(int));
+        while (new_cap <= e) new_cap *= 2;
+        ecs->free_list_next = realloc(ecs->free_list_next, (size_t)new_cap * sizeof(int));
         assert(ecs->free_list_next);
         ecs->free_list_capacity = new_cap;
     }
@@ -902,7 +992,11 @@ void *ecs_add(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
     if (ecs->in_progress) return ecs_add_deferred(ecs, entity, component);
 
     assert(component < ecs->comp_count);
-    return ecs_pool_add(&ecs->pools[component], entity);
+    void *ptr = ecs_pool_add(&ecs->pools[component], entity);
+    ecs_ensure_entity_bits(ecs, entity);
+    ecs_bs_set(&ecs->entity_bits[entity], component);
+    ecs_sync_entity_systems(ecs, entity);
+    return ptr;
 }
 
 void ecs_remove(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
@@ -914,6 +1008,9 @@ void ecs_remove(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
 
     assert(component < ecs->comp_count);
     (void)ecs_pool_remove(&ecs->pools[component], entity);
+    if (entity < ecs->entity_bits_cap)
+        ecs_bs_clear(&ecs->entity_bits[entity], component);
+    ecs_sync_entity_systems(ecs, entity);
 }
 
 void *ecs_get(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
@@ -925,7 +1022,8 @@ void *ecs_get(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
 bool ecs_has(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
 {
     assert(component < ecs->comp_count);
-    return ecs_ss_has(&ecs->pools[component].set, entity);
+    if (entity >= ecs->entity_bits_cap) return false;
+    return ecs_bs_test(&ecs->entity_bits[entity], component);
 }
 
 ecs_sys_t ecs_sys_create(ecs_t *ecs, ecs_system_fn fn, void *udata)
@@ -937,6 +1035,7 @@ ecs_sys_t ecs_sys_create(ecs_t *ecs, ecs_system_fn fn, void *udata)
     ecs_system *s = &ecs->systems[sys];
 
     memset(s, 0, sizeof(*s));
+    ecs_ss_init(&s->matched);
     s->fn = fn;
     s->udata = udata;
     s->enabled = true;
@@ -949,12 +1048,15 @@ void ecs_sys_require(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
     assert(sys >= 0 && sys < ecs->system_count);
     ecs_system *s = &ecs->systems[sys];
     ecs_bs_set(&s->all_of, comp);
+    ecs_rebuild_system_matched(ecs, s);
 }
 
 void ecs_sys_exclude(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp)
 {
     assert(sys >= 0 && sys < ecs->system_count);
-    ecs_bs_set(&ecs->systems[sys].none_of, comp);
+    ecs_system *s = &ecs->systems[sys];
+    ecs_bs_set(&s->none_of, comp);
+    ecs_rebuild_system_matched(ecs, s);
 }
 
 void ecs_sys_enable(ecs_t *ecs, ecs_sys_t sys)
@@ -999,9 +1101,8 @@ void *ecs_sys_get_udata(ecs_t *ecs, ecs_sys_t sys)
     return ecs->systems[sys].udata;
 }
 
-int ecs_run_system(ecs_t *ecs, ecs_sys_t sys, float dt)
+int ecs_run_system(ecs_t *ecs, ecs_sys_t sys)
 {
-    (void)dt;
     assert(sys >= 0 && sys < ecs->system_count);
 
     ecs_system *s = &ecs->systems[sys];
@@ -1013,11 +1114,7 @@ int ecs_run_system(ecs_t *ecs, ecs_sys_t sys, float dt)
     int ret = 0;
 
     if (!mt) {
-        ecs_task_args a = { .ecs = ecs,
-                            .sys_index = sys,
-                            .task_index = 0,
-                            .scratch_buffer = ecs->task_scratch[0],
-                            .scratch_capacity = ecs->task_scratch_capacity[0] };
+        ecs_task_args a = { .ecs = ecs, .sys_index = sys, .task_index = 0 };
         ret = ecs_run_system_task(&a);
     } else {
         ecs_task_args *args = ecs->task_args_storage;
@@ -1026,8 +1123,6 @@ int ecs_run_system(ecs_t *ecs, ecs_sys_t sys, float dt)
             args[t].ecs = ecs;
             args[t].sys_index = sys;
             args[t].task_index = t;
-            args[t].scratch_buffer = ecs->task_scratch[t];
-            args[t].scratch_capacity = ecs->task_scratch_capacity[t];
 
             int enqueue_ret = ecs->enqueue_cb(ecs_run_system_task, &args[t], ecs->task_udata);
             if (enqueue_ret) {
@@ -1047,52 +1142,16 @@ done:
 
 int ecs_progress(ecs_t *ecs, int group_mask)
 {
-    int ret = 0;
-
     for (int i = 0; i < ecs->system_count; i++) {
         ecs_system *s = &ecs->systems[i];
-        if (!s->enabled) continue;
-
         int matches = (group_mask == 0) ? (s->group == 0) : (s->group & group_mask);
         if (!matches) continue;
 
-        ecs->in_progress = true;
-
-        bool mt = (s->parallel && ecs->enqueue_cb && ecs->wait_cb && ecs->task_count > 1);
-
-        if (!mt) {
-            ecs_task_args a = { .ecs = ecs,
-                                .sys_index = i,
-                                .task_index = 0,
-                                .scratch_buffer = ecs->task_scratch[0],
-                                .scratch_capacity = ecs->task_scratch_capacity[0] };
-            ret = ecs_run_system_task(&a);
-        } else {
-            ecs_task_args *args = ecs->task_args_storage;
-            for (int t = 0; t < ecs->task_count; t++) {
-                args[t].ecs = ecs;
-                args[t].sys_index = i;
-                args[t].task_index = t;
-                args[t].scratch_buffer = ecs->task_scratch[t];
-                args[t].scratch_capacity = ecs->task_scratch_capacity[t];
-                int enqueue_ret = ecs->enqueue_cb(ecs_run_system_task, &args[t], ecs->task_udata);
-                if (enqueue_ret) {
-                    ret = enqueue_ret;
-                    goto done;
-                }
-            }
-            ecs->wait_cb(ecs->task_udata);
-        }
-
-        ecs->in_progress = false;
-        ecs_sync(ecs);
-        if (ret) goto done;
+        int ret = ecs_run_system(ecs, i);
+        if (ret) return ret;
     }
 
-done:
-    ecs->in_progress = false;
-    ecs_sync(ecs);
-    return ret;
+    return 0;
 }
 
 #endif // BRUTAL_ECS_IMPLEMENTATION
