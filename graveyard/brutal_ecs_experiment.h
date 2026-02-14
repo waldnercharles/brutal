@@ -85,7 +85,6 @@ typedef struct ecs_view
 {
     ecs_entity *entities;
     int count;
-    ecs_t *ecs;
 } ecs_view;
 
 typedef int (*ecs_system_fn)(ecs_t *ecs, ecs_view *view, void *udata);
@@ -885,7 +884,7 @@ static inline int ecs_run_system_task(void *args_v)
 
     if (matched_count == 0) { goto done; }
 
-    ecs_view view = { .entities = matched, .count = matched_count, .ecs = ecs };
+    ecs_view view = { .entities = matched, .count = matched_count };
     ret = s->fn(ecs, &view, s->udata);
 
 done:

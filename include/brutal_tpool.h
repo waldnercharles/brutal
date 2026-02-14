@@ -42,17 +42,6 @@
 #include <stdbool.h>
 
 // -----------------------------------------------------------------------------
-//  Configuration
-
-#ifndef BRUTAL_TPOOL_CACHE_LINE
-#define BRUTAL_TPOOL_CACHE_LINE 64
-#endif
-
-#ifndef BRUTAL_TPOOL_DEFAULT_QUEUE_SIZE
-#define BRUTAL_TPOOL_DEFAULT_QUEUE_SIZE 1024
-#endif
-
-// -----------------------------------------------------------------------------
 //  Public API
 
 struct tpool_s;
@@ -114,6 +103,17 @@ void tpool_destroy(tpool_t *pool);
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+// -----------------------------------------------------------------------------
+//  Configuration
+
+#ifndef BRUTAL_TPOOL_CACHE_LINE
+#define BRUTAL_TPOOL_CACHE_LINE 64
+#endif
+
+#ifndef BRUTAL_TPOOL_DEFAULT_QUEUE_SIZE
+#define BRUTAL_TPOOL_DEFAULT_QUEUE_SIZE 1024
+#endif
 
 // CPU relaxation hint for spin loops
 #if defined(__x86_64__) || defined(__i386__)

@@ -54,25 +54,6 @@
 #define BRUTAL_ECS_H
 
 // -----------------------------------------------------------------------------
-//  Configuration
-
-#ifndef ECS_MAX_COMPONENTS
-#define ECS_MAX_COMPONENTS 64
-#endif
-
-#ifndef ECS_MAX_SYSTEMS
-#define ECS_MAX_SYSTEMS 256
-#endif
-
-#ifndef ECS_MT_MAX_TASKS
-#define ECS_MT_MAX_TASKS 1024
-#endif
-
-#ifndef ECS_CACHE_LINE
-#define ECS_CACHE_LINE 64
-#endif
-
-// -----------------------------------------------------------------------------
 //  Public API
 
 typedef int ecs_entity;
@@ -123,6 +104,7 @@ void ecs_set_task_callbacks(
     void *task_udata,
     int task_count
 );
+void ecs_set_min_entities_per_task(ecs_t *ecs, int min_count);
 
 // Entities
 ecs_entity ecs_create(ecs_t *ecs);
@@ -167,8 +149,27 @@ int ecs_progress(ecs_t *ecs, int group_mask);
 #include <stdlib.h>
 #include <string.h>
 
+// -----------------------------------------------------------------------------
+//  Configuration
+
+#ifndef ECS_MAX_COMPONENTS
+#define ECS_MAX_COMPONENTS 64
+#endif
+
+#ifndef ECS_MAX_SYSTEMS
+#define ECS_MAX_SYSTEMS 256
+#endif
+
+#ifndef ECS_MT_MAX_TASKS
+#define ECS_MT_MAX_TASKS 1024
+#endif
+
 #ifndef ECS_CMD_BUFFER_CAPACITY
 #define ECS_CMD_BUFFER_CAPACITY 1024
+#endif
+
+#ifndef ECS_CACHE_LINE
+#define ECS_CACHE_LINE 64
 #endif
 
 // -----------------------------------------------------------------------------
@@ -596,6 +597,7 @@ typedef struct
     ecs_t *ecs;
     int sys_index;
     int task_index;
+    int task_count;
 } ecs_task_args;
 
 struct ecs_s
@@ -620,7 +622,8 @@ struct ecs_s
     ecs_enqueue_task_fn enqueue_cb;
     ecs_wait_tasks_fn wait_cb;
     void *task_udata;
-    int task_count;
+    int max_task_count;
+    int min_entities_per_task;
 
     bool in_progress;
 
@@ -683,7 +686,7 @@ static inline void ecs_set_tls_task_index(int task_index)
 static inline ecs_cmd_buffer *ecs_current_cmd_buffer(ecs_t *ecs)
 {
     int idx = ecs_tls_task_index;
-    assert(idx >= 0 && idx < ecs->task_count);
+    assert(idx >= 0 && idx < ecs->max_task_count);
     return &ecs->cmd_buffers[idx];
 }
 
@@ -821,7 +824,7 @@ static inline void ecs_sync(ecs_t *ecs)
     assert(!ecs->in_progress);
 
     bool any_cmds = false;
-    for (int t = 0; t < ecs->task_count; t++) {
+    for (int t = 0; t < ecs->max_task_count; t++) {
         if (ecs->cmd_buffers[t].count) {
             any_cmds = true;
             break;
@@ -829,7 +832,7 @@ static inline void ecs_sync(ecs_t *ecs)
     }
     if (!any_cmds) return;
 
-    for (int t = 0; t < ecs->task_count; t++) {
+    for (int t = 0; t < ecs->max_task_count; t++) {
         ecs_cmd_buffer *cb = &ecs->cmd_buffers[t];
         for (int i = 0; i < cb->count; i++) {
             ecs_cmd *cmd = &cb->commands[i];
@@ -875,7 +878,7 @@ static inline int ecs_run_system_task(void *args_v)
 
     ecs_set_tls_task_index(args->task_index);
 
-    int task_count = ecs->task_count;
+    int task_count = args->task_count;
     int task_idx = args->task_index;
     int start = (count * task_idx) / task_count;
     int end = (count * (task_idx + 1)) / task_count;
@@ -902,7 +905,8 @@ ecs_t *ecs_new()
     memset(ecs, 0, sizeof(*ecs));
     atomic_store(&ecs->next_entity, 1);
     atomic_store(&ecs->free_list_head, -1);
-    ecs->task_count = 1;
+    ecs->max_task_count = 1;
+    ecs->min_entities_per_task = 64;
 
     ecs->free_list_capacity = 1024;
     ecs->free_list_next = malloc((size_t)ecs->free_list_capacity * sizeof(int));
@@ -920,7 +924,8 @@ void ecs_free(ecs_t *ecs)
     for (int i = 0; i < ecs->system_count; i++)
         ecs_ss_free(&ecs->systems[i].matched);
 
-    for (int i = 0; i < ecs->comp_count; i++) ecs_pool_free(&ecs->components[i]);
+    for (int i = 0; i < ecs->comp_count; i++)
+        ecs_pool_free(&ecs->components[i]);
     free(ecs->free_list_next);
     free(ecs->entity_bits);
 
@@ -944,7 +949,13 @@ void ecs_set_task_callbacks(
     ecs->task_udata = task_udata;
     if (task_count < 1) task_count = 1;
     if (task_count > ECS_MT_MAX_TASKS) task_count = ECS_MT_MAX_TASKS;
-    ecs->task_count = task_count;
+    ecs->max_task_count = task_count;
+}
+
+void ecs_set_min_entities_per_task(ecs_t *ecs, int min_count)
+{
+    if (min_count < 1) min_count = 1;
+    ecs->min_entities_per_task = min_count;
 }
 
 ecs_entity ecs_create(ecs_t *ecs)
@@ -1111,19 +1122,31 @@ int ecs_run_system(ecs_t *ecs, ecs_sys_t sys)
 
     ecs->in_progress = true;
 
-    bool mt = (s->parallel && ecs->enqueue_cb && ecs->wait_cb && ecs->task_count > 1);
+    bool mt = (s->parallel && ecs->enqueue_cb && ecs->wait_cb && ecs->max_task_count > 1);
     int ret = 0;
 
     if (!mt) {
-        ecs_task_args a = { .ecs = ecs, .sys_index = sys, .task_index = 0 };
-        ret = ecs_run_system_task(&a);
+        ecs_set_tls_task_index(0);
+        int count = s->matched.count;
+        if (count > 0) {
+            ecs_view view = { .entities = s->matched.dense, .count = count };
+            ret = s->fn(ecs, &view, s->udata);
+        }
+        ecs_set_tls_task_index(0);
     } else {
+        int count = s->matched.count;
+        int min_slice = ecs->min_entities_per_task;
+        int task_count = (count + min_slice - 1) / min_slice;
+        if (task_count > ecs->max_task_count) task_count = ecs->max_task_count;
+        if (task_count < 1) task_count = 1;
+
         ecs_task_args *args = ecs->task_args_storage;
 
-        for (int t = 0; t < ecs->task_count; t++) {
+        for (int t = 0; t < task_count; t++) {
             args[t].ecs = ecs;
             args[t].sys_index = sys;
             args[t].task_index = t;
+            args[t].task_count = task_count;
 
             int enqueue_ret = ecs->enqueue_cb(ecs_run_system_task, &args[t], ecs->task_udata);
             if (enqueue_ret) {
