@@ -75,6 +75,7 @@ typedef int (*ecs_enqueue_task_fn)(int (*fn)(void *args), void *fn_args, void *u
 typedef void (*ecs_wait_tasks_fn)(void *udata);
 
 #include <stdbool.h>
+#include <stdint.h>
 
 // clang-format off
 // Component ID macros — derive a variable name from the type
@@ -118,7 +119,8 @@ void *ecs_get(ecs_t *ecs, ecs_entity entity, ecs_comp_t component);
 bool ecs_has(ecs_t *ecs, ecs_entity entity, ecs_comp_t component);
 
 // Systems
-ecs_sys_t ecs_sys_create(ecs_t *ecs, ecs_system_fn fn, void *udata);
+ecs_sys_t ecs_sys_create_(ecs_t *ecs, ecs_system_fn fn, void *udata, const char *name);
+#define ecs_sys_create(ecs, fn, udata) ecs_sys_create_((ecs), (fn), (udata), #fn)
 void ecs_sys_require(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp);
 void ecs_sys_exclude(ecs_t *ecs, ecs_sys_t sys, ecs_comp_t comp);
 void ecs_sys_enable(ecs_t *ecs, ecs_sys_t sys);
@@ -132,6 +134,12 @@ void *ecs_sys_get_udata(ecs_t *ecs, ecs_sys_t sys);
 // Execution
 int ecs_run_system(ecs_t *ecs, ecs_sys_t sys);
 int ecs_progress(ecs_t *ecs, int group_mask);
+
+// Timing / introspection
+void ecs_set_tick_fn(ecs_t *ecs, uint64_t (*get_ticks)());
+const char *ecs_sys_get_name(ecs_t *ecs, ecs_sys_t sys);
+uint64_t ecs_sys_get_ticks(ecs_t *ecs, ecs_sys_t sys);
+int ecs_system_count(ecs_t *ecs);
 
 #endif // BRUTAL_ECS_H
 
@@ -588,6 +596,8 @@ typedef struct
     int group;
     ecs_system_fn fn;
     void *udata;
+    const char *name;
+    uint64_t last_ticks;
     bool enabled;
     bool parallel;
 } ecs_system;
@@ -625,6 +635,7 @@ struct ecs_s
     int max_task_count;
     int min_entities_per_task;
 
+    uint64_t (*get_ticks)();
     bool in_progress;
 
     ecs_task_args task_args_storage[ECS_MT_MAX_TASKS];
@@ -1038,7 +1049,7 @@ bool ecs_has(ecs_t *ecs, ecs_entity entity, ecs_comp_t component)
     return ecs_bs_test(&ecs->entity_bits[entity], component);
 }
 
-ecs_sys_t ecs_sys_create(ecs_t *ecs, ecs_system_fn fn, void *udata)
+ecs_sys_t ecs_sys_create_(ecs_t *ecs, ecs_system_fn fn, void *udata, const char *name)
 {
     assert(ecs->system_count < ECS_MAX_SYSTEMS);
     assert(fn);
@@ -1050,6 +1061,7 @@ ecs_sys_t ecs_sys_create(ecs_t *ecs, ecs_system_fn fn, void *udata)
     ecs_ss_init(&s->matched);
     s->fn = fn;
     s->udata = udata;
+    s->name = name;
     s->enabled = true;
 
     return sys;
@@ -1118,8 +1130,12 @@ int ecs_run_system(ecs_t *ecs, ecs_sys_t sys)
     assert(sys >= 0 && sys < ecs->system_count);
 
     ecs_system *s = &ecs->systems[sys];
-    if (!s->enabled) return 0;
+    if (!s->enabled) {
+        s->last_ticks = 0;
+        return 0;
+    }
 
+    uint64_t t0 = ecs->get_ticks ? ecs->get_ticks() : 0;
     ecs->in_progress = true;
 
     bool mt = (s->parallel && ecs->enqueue_cb && ecs->wait_cb && ecs->max_task_count > 1);
@@ -1161,6 +1177,7 @@ int ecs_run_system(ecs_t *ecs, ecs_sys_t sys)
 done:
     ecs->in_progress = false;
     ecs_sync(ecs);
+    if (ecs->get_ticks) s->last_ticks = ecs->get_ticks() - t0;
     return ret;
 }
 
@@ -1176,6 +1193,28 @@ int ecs_progress(ecs_t *ecs, int group_mask)
     }
 
     return 0;
+}
+
+void ecs_set_tick_fn(ecs_t *ecs, uint64_t (*get_ticks)())
+{
+    ecs->get_ticks = get_ticks;
+}
+
+const char *ecs_sys_get_name(ecs_t *ecs, ecs_sys_t sys)
+{
+    assert(sys >= 0 && sys < ecs->system_count);
+    return ecs->systems[sys].name;
+}
+
+uint64_t ecs_sys_get_ticks(ecs_t *ecs, ecs_sys_t sys)
+{
+    assert(sys >= 0 && sys < ecs->system_count);
+    return ecs->systems[sys].last_ticks;
+}
+
+int ecs_system_count(ecs_t *ecs)
+{
+    return ecs->system_count;
 }
 
 #endif // BRUTAL_ECS_IMPLEMENTATION
