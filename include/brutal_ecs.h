@@ -885,7 +885,16 @@ static inline int ecs_run_system_task(void *args_v)
     ecs_system *s = &ecs->systems[args->sys_index];
 
     int count = s->matched.count;
-    if (!count) return 0;
+    if (!count) {
+        if (args->task_index == 0 && ecs_bs_none(&s->all_of)) {
+            ecs_set_tls_task_index(0);
+            ecs_view view = { .entities = NULL, .count = 0 };
+            int ret = s->fn(ecs, &view, s->udata);
+            ecs_set_tls_task_index(0);
+            return ret;
+        }
+        return 0;
+    }
 
     ecs_set_tls_task_index(args->task_index);
 
@@ -1144,7 +1153,8 @@ int ecs_run_system(ecs_t *ecs, ecs_sys_t sys)
     if (!mt) {
         ecs_set_tls_task_index(0);
         int count = s->matched.count;
-        if (count > 0) {
+        bool always_run = ecs_bs_none(&s->all_of);
+        if (count > 0 || always_run) {
             ecs_view view = { .entities = s->matched.dense, .count = count };
             ret = s->fn(ecs, &view, s->udata);
         }
