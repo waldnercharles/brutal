@@ -43,6 +43,7 @@
 */
 
 #include <assert.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -164,7 +165,7 @@ typedef struct
 typedef struct
 {
     uint64_t mask;
-    int count;
+    _Atomic(int) count;
     int *entity_ids;
 #define ECS_ARCH_COL_(T, f) T *f;
     ECS_COMPONENTS(ECS_ARCH_COL_)
@@ -195,10 +196,12 @@ struct ecs_task
 struct ecs_world
 {
     ecs_entity_info entities[ECS_MAX_ENTITIES];
-    int free_list[ECS_MAX_ENTITIES];
-    int free_count, hwm, alive_count;
+    int free_list_next[ECS_MAX_ENTITIES]; /* per-entity linked list, 0 = end */
+    _Atomic(int) free_list_head;          /* CAS stack head, 0 = empty */
+    _Atomic(int) hwm;
+    _Atomic(int) alive_count;
     ecs_archetype archetypes[ECS_MAX_ARCHETYPES];
-    int archetype_count;
+    _Atomic(int) archetype_count;
     bool iterating;
     int deferred_kills[ECS_MAX_ENTITIES];
     int deferred_kill_count;
@@ -223,22 +226,55 @@ static inline bool ecs_alive(ecs_world *w, ecs_entity e)
            w->entities[e.id].gen == e.gen && !w->deferred_dead[e.id];
 }
 
+/* --- lock-free free list -------------------------------------- */
+
+static inline int ecs_free_list_pop_(ecs_world *w)
+{
+    int old_head, next;
+    do {
+        old_head = atomic_load_explicit(&w->free_list_head, memory_order_acquire);
+        if (old_head == 0) return 0;
+        next = w->free_list_next[old_head];
+    } while (!atomic_compare_exchange_weak_explicit(
+        &w->free_list_head, &old_head, next,
+        memory_order_acq_rel, memory_order_acquire));
+    return old_head;
+}
+
+static inline void ecs_free_list_push_(ecs_world *w, int id)
+{
+    int old_head;
+    do {
+        old_head = atomic_load_explicit(&w->free_list_head, memory_order_relaxed);
+        w->free_list_next[id] = old_head;
+    } while (!atomic_compare_exchange_weak_explicit(
+        &w->free_list_head, &old_head, id,
+        memory_order_release, memory_order_relaxed));
+}
+
 /* --- archetype helpers ---------------------------------------- */
 
 static inline int ecs_find_or_create_archetype_(ecs_world *w, uint64_t mask)
 {
-    for (int a = 0; a < w->archetype_count; a++)
+    int n = atomic_load_explicit(&w->archetype_count, memory_order_acquire);
+    for (int a = 0; a < n; a++)
         if (w->archetypes[a].mask == mask) return a;
-    assert(w->archetype_count < ECS_MAX_ARCHETYPES);
-    int a = w->archetype_count++;
+
+    int a = atomic_fetch_add_explicit(&w->archetype_count, 1, memory_order_relaxed);
+    assert(a < ECS_MAX_ARCHETYPES);
+
+    /* Re-check: another thread may have created this mask concurrently */
+    for (int i = 0; i < a; i++)
+        if (w->archetypes[i].mask == mask) return i;
+
     ecs_archetype *arch = &w->archetypes[a];
-    arch->mask = mask;
     arch->entity_ids = ecs_vm_reserve_((size_t)ECS_MAX_ENTITIES * sizeof(int));
 #define ECS_ALLOC_(T, f)                                                       \
     if (mask & ECS_MASK(f))                                                    \
         arch->f = ecs_vm_reserve_((size_t)ECS_MAX_ENTITIES * sizeof(T));
     ECS_COMPONENTS(ECS_ALLOC_)
 #undef ECS_ALLOC_
+    arch->mask = mask; /* publish last — scanners won't match until set */
     return a;
 }
 
@@ -246,26 +282,23 @@ static inline int ecs_find_or_create_archetype_(ecs_world *w, uint64_t mask)
 
 static inline ecs_entity ecs_spawn_(ecs_world *w, uint64_t mask)
 {
-    int id;
-    if (w->free_count > 0) {
-        id = w->free_list[--w->free_count];
-    } else {
-        assert(w->hwm + 1 < ECS_MAX_ENTITIES);
-        id = ++w->hwm;
+    int id = ecs_free_list_pop_(w);
+    if (id == 0) {
+        id = atomic_fetch_add_explicit(&w->hwm, 1, memory_order_relaxed) + 1;
+        assert(id < ECS_MAX_ENTITIES);
     }
     w->entities[id].gen++;
 
     int ai = ecs_find_or_create_archetype_(w, mask);
     ecs_archetype *arch = &w->archetypes[ai];
 
-    assert(arch->count < ECS_MAX_ENTITIES);
-
-    int row = arch->count++;
+    int row = atomic_fetch_add_explicit(&arch->count, 1, memory_order_relaxed);
+    assert(row < ECS_MAX_ENTITIES);
     arch->entity_ids[row] = id;
 
     w->entities[id].archetype = ai;
     w->entities[id].row = row;
-    w->alive_count++;
+    atomic_fetch_add_explicit(&w->alive_count, 1, memory_order_relaxed);
 
     return (ecs_entity){ .id = id, .gen = w->entities[id].gen };
 }
@@ -273,6 +306,23 @@ static inline ecs_entity ecs_spawn_(ecs_world *w, uint64_t mask)
 /* clang-format off */
 #define ecs_spawn(w, ...) ecs_spawn_((w), ECS_TMASK_ALL_TYPES(__VA_ARGS__))
 /* clang-format on */
+
+/* --- clone ---------------------------------------------------- */
+
+static inline ecs_entity ecs_clone(ecs_world *w, ecs_entity src)
+{
+    assert(ecs_alive(w, src));
+    ecs_entity_info *si = &w->entities[src.id];
+    ecs_archetype *sa = &w->archetypes[si->archetype];
+    ecs_entity dst = ecs_spawn_(w, sa->mask);
+    ecs_entity_info *di = &w->entities[dst.id];
+    ecs_archetype *da = &w->archetypes[di->archetype];
+#define ECS_CLONE_(T, f) \
+    if (sa->mask & ECS_MASK(f)) da->f[di->row] = sa->f[si->row];
+    ECS_COMPONENTS(ECS_CLONE_)
+#undef ECS_CLONE_
+    return dst;
+}
 
 /* --- deferred kill flush -------------------------------------- */
 
@@ -284,7 +334,7 @@ static inline void ecs_flush_kills_(ecs_world *w)
         ecs_entity_info *info = &w->entities[id];
         ecs_archetype *arch = &w->archetypes[info->archetype];
         int row = info->row;
-        int last = arch->count - 1;
+        int last = atomic_fetch_sub_explicit(&arch->count, 1, memory_order_relaxed) - 1;
 
         if (row != last) {
             int swapped_id = arch->entity_ids[last];
@@ -296,9 +346,8 @@ static inline void ecs_flush_kills_(ecs_world *w)
             w->entities[swapped_id].row = row;
         }
 
-        arch->count--;
         info->archetype = -1;
-        w->free_list[w->free_count++] = id;
+        ecs_free_list_push_(w, id);
     }
     w->deferred_kill_count = 0;
 }
@@ -314,7 +363,7 @@ static inline void ecs_par_flush_kills_(ecs_world *w)
             ecs_entity_info *info = &w->entities[id];
             ecs_archetype *arch = &w->archetypes[info->archetype];
             int row = info->row;
-            int last = arch->count - 1;
+            int last = atomic_fetch_sub_explicit(&arch->count, 1, memory_order_relaxed) - 1;
 
             if (row != last) {
                 int swapped_id = arch->entity_ids[last];
@@ -326,10 +375,9 @@ static inline void ecs_par_flush_kills_(ecs_world *w)
                 w->entities[swapped_id].row = row;
             }
 
-            arch->count--;
             info->archetype = -1;
-            w->free_list[w->free_count++] = id;
-            w->alive_count--;
+            ecs_free_list_push_(w, id);
+            atomic_fetch_sub_explicit(&w->alive_count, 1, memory_order_relaxed);
         }
         w->par_kill_counts[t] = 0;
     }
@@ -346,7 +394,7 @@ static inline void ecs_kill(ecs_world *w, ecs_entity e)
         info->gen++;
         w->deferred_dead[e.id] = true;
         w->deferred_kills[w->deferred_kill_count++] = e.id;
-        w->alive_count--;
+        atomic_fetch_sub_explicit(&w->alive_count, 1, memory_order_relaxed);
         return;
     }
 
@@ -360,7 +408,7 @@ static inline void ecs_kill(ecs_world *w, ecs_entity e)
 
     ecs_archetype *arch = &w->archetypes[info->archetype];
     int row = info->row;
-    int last = arch->count - 1;
+    int last = atomic_fetch_sub_explicit(&arch->count, 1, memory_order_relaxed) - 1;
 
     if (row != last) {
         int swapped_id = arch->entity_ids[last];
@@ -372,11 +420,10 @@ static inline void ecs_kill(ecs_world *w, ecs_entity e)
         w->entities[swapped_id].row = row;
     }
 
-    arch->count--;
     info->gen++;
     info->archetype = -1;
-    w->free_list[w->free_count++] = e.id;
-    w->alive_count--;
+    ecs_free_list_push_(w, e.id);
+    atomic_fetch_sub_explicit(&w->alive_count, 1, memory_order_relaxed);
 }
 
 /* --- per-component accessors ---------------------------------- */
@@ -428,9 +475,10 @@ ECS_COMPONENTS(ECS_SET_IMPL_)
 
 static inline ecs_entity ecs_first_(ecs_world *w, uint64_t mask)
 {
-    for (int a = 0; a < w->archetype_count; a++) {
+    int n = atomic_load_explicit(&w->archetype_count, memory_order_relaxed);
+    for (int a = 0; a < n; a++) {
         ecs_archetype *arch = &w->archetypes[a];
-        if ((arch->mask & mask) == mask && arch->count > 0) {
+        if ((arch->mask & mask) == mask && atomic_load_explicit(&arch->count, memory_order_relaxed) > 0) {
             int id = arch->entity_ids[0];
             return (ecs_entity){ .id = id, .gen = w->entities[id].gen };
         }
@@ -528,11 +576,12 @@ static inline ecs_entity ecs_first_(ecs_world *w, uint64_t mask)
     ECS_P_(w)->par_iterating = true;                                                                                       \
     for (int ECS_P_(a) = 0; ECS_P_(a) < ECS_P_(w)->archetype_count; ECS_P_(a)++) {                                          \
         ecs_archetype *ECS_P_(arch) = &ECS_P_(w)->archetypes[ECS_P_(a)];                                                    \
-        if ((ECS_P_(arch)->mask & ECS_P_(mask)) != ECS_P_(mask) || ECS_P_(arch)->count == 0) continue;                       \
-        int ECS_P_(tc) = ecs_compute_tasks_(ECS_P_(w), ECS_P_(arch)->count);                                                \
+        int ECS_P_(cnt) = atomic_load_explicit(&ECS_P_(arch)->count, memory_order_relaxed);                                                                  \
+        if ((ECS_P_(arch)->mask & ECS_P_(mask)) != ECS_P_(mask) || ECS_P_(cnt) == 0) continue;                                \
+        int ECS_P_(tc) = ecs_compute_tasks_(ECS_P_(w), ECS_P_(cnt));                                                         \
         for (int ECS_P_(t) = 0; ECS_P_(t) < ECS_P_(tc); ECS_P_(t)++) {                                                      \
-            int ECS_P_(start) = (ECS_P_(arch)->count * ECS_P_(t)) / ECS_P_(tc);                                             \
-            int ECS_P_(end) = (ECS_P_(arch)->count * (ECS_P_(t) + 1)) / ECS_P_(tc);                                         \
+            int ECS_P_(start) = (ECS_P_(cnt) * ECS_P_(t)) / ECS_P_(tc);                                                     \
+            int ECS_P_(end) = (ECS_P_(cnt) * (ECS_P_(t) + 1)) / ECS_P_(tc);                                                 \
             ECS_P_(w)->par_tasks[ECS_P_(t)].fn = (sys_fn);                                                                 \
             ECS_P_(w)->par_tasks[ECS_P_(t)].w = ECS_P_(w);                                                                 \
             ECS_P_(w)->par_tasks[ECS_P_(t)].n = ECS_P_(end) - ECS_P_(start);                                               \
@@ -602,7 +651,8 @@ static inline void ecs_kill_id(ecs_world *w, int id)
 
 static inline void ecs_world_destroy(ecs_world *w)
 {
-    for (int a = 0; a < w->archetype_count; a++) {
+    int n = atomic_load_explicit(&w->archetype_count, memory_order_relaxed);
+    for (int a = 0; a < n; a++) {
         ecs_archetype *arch = &w->archetypes[a];
         ecs_vm_free_(arch->entity_ids,
                      (size_t)ECS_MAX_ENTITIES * sizeof(int));

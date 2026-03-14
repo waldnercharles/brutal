@@ -700,6 +700,67 @@ TEST_CASE(test_arch_parallel_for_kill_threaded)
     return true;
 }
 
+/* ---- parallel spawn ---- */
+
+static void par_spawn_sys(ecs_task *t)
+{
+    for (int i = 0; i < t->n; i++) {
+        if (t->position[i].x == 0.f) {
+            ecs_entity e = ecs_spawn(t->w, Position);
+            ecs_set(t->w, e, (Position){ 999.f, 999.f });
+        }
+    }
+}
+
+TEST_CASE(test_arch_parallel_spawn_fallback)
+{
+    ecs_world world = {0};
+
+    for (int i = 0; i < 10; i++) {
+        ecs_entity e = ecs_spawn(&world, Position);
+        ecs_set(&world, e, (Position){ (i % 2 == 0) ? 0.f : 1.f, 0.f });
+    }
+
+    /* no thread callbacks — single-threaded fallback */
+    ecs_parallel_for(&world, par_spawn_sys, Position);
+
+    /* 10 original + 5 spawned (every other had x==0) */
+    REQUIRE(world.alive_count == 15);
+
+    ecs_world_destroy(&world);
+    return true;
+}
+
+TEST_CASE(test_arch_parallel_spawn_threaded)
+{
+    ecs_world world = {0};
+    tpool_t *pool = tpool_new(4, 256);
+
+    for (int i = 0; i < 200; i++) {
+        ecs_entity e = ecs_spawn(&world, Position);
+        ecs_set(&world, e, (Position){ (i % 2 == 0) ? 0.f : 1.f, 0.f });
+    }
+
+    ecs_set_threads(&world, test_enqueue_, test_wait_, pool, 4);
+    ecs_set_min_entities_per_task(&world, 32);
+
+    ecs_parallel_for(&world, par_spawn_sys, Position);
+
+    /* 200 original + 100 spawned (every other had x==0) */
+    REQUIRE(world.alive_count == 300);
+
+    /* verify all spawned entities are alive and have correct position */
+    int spawn_count = 0;
+    ECS_FOR(&world, Position, pos) {
+        if (pos->x == 999.f) spawn_count++;
+    }
+    REQUIRE(spawn_count == 100);
+
+    tpool_destroy(pool);
+    ecs_world_destroy(&world);
+    return true;
+}
+
 /* ---- Suite entry point ---- */
 
 void arch_ecs_suite()
@@ -745,4 +806,7 @@ void arch_ecs_suite()
     RUN_TEST_CASE(test_arch_parallel_for_kill_fallback);
     RUN_TEST_CASE(test_arch_parallel_for_threaded);
     RUN_TEST_CASE(test_arch_parallel_for_kill_threaded);
+    /* parallel spawn */
+    RUN_TEST_CASE(test_arch_parallel_spawn_fallback);
+    RUN_TEST_CASE(test_arch_parallel_spawn_threaded);
 }
