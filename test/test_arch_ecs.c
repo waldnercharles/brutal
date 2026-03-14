@@ -12,7 +12,20 @@ typedef struct { int hp;        } Health;
     X(Health,   health)
 
 #include "arch_ecs.h"
+#include "brutal_tpool.h"
 #include "pico_unit.h"
+
+/* Thread pool adapter callbacks for ecs_parallel_for */
+static int test_enqueue_(int (*fn)(void *), void *arg, void *udata)
+{
+    tpool_enqueue(udata, fn, arg);
+    return 0;
+}
+
+static void test_wait_(void *udata)
+{
+    tpool_wait(udata);
+}
 
 /* ---- Spawn / Alive / Kill ---- */
 
@@ -585,6 +598,108 @@ TEST_CASE(test_arch_spawn_during_iteration)
     return true;
 }
 
+/* ---- ecs_parallel_for ---- */
+
+static void par_move(ecs_task *t)
+{
+    for (int i = 0; i < t->n; i++)
+        t->position[i].x += t->velocity[i].vx;
+}
+
+static void par_cleanup(ecs_task *t)
+{
+    for (int i = 0; i < t->n; i++)
+        if (t->health[i].hp <= 0)
+            ecs_kill_id(t->w, t->entity_ids[i]);
+}
+
+TEST_CASE(test_arch_parallel_for_fallback)
+{
+    ecs_world world = {0};
+    ecs_entity e1 = ecs_spawn(&world, Position, Velocity);
+    ecs_set(&world, e1, (Position){ 0.f, 0.f });
+    ecs_set(&world, e1, (Velocity){ 1.f, 0.f });
+    ecs_entity e2 = ecs_spawn(&world, Position);
+    ecs_set(&world, e2, (Position){ 5.f, 5.f });
+
+    ecs_parallel_for(&world, par_move, Position, Velocity);
+
+    REQUIRE(ecs_get_position(&world, e1)->x == 1.f);
+    REQUIRE(ecs_get_position(&world, e2)->x == 5.f);
+
+    ecs_world_destroy(&world);
+    return true;
+}
+
+TEST_CASE(test_arch_parallel_for_kill_fallback)
+{
+    ecs_world world = {0};
+    ecs_entity e1 = ecs_spawn(&world, Health);
+    ecs_set(&world, e1, (Health){ 0 });
+    ecs_entity e2 = ecs_spawn(&world, Health);
+    ecs_set(&world, e2, (Health){ 100 });
+    ecs_entity e3 = ecs_spawn(&world, Health);
+    ecs_set(&world, e3, (Health){ 0 });
+
+    ecs_parallel_for(&world, par_cleanup, Health);
+
+    REQUIRE(world.alive_count == 1);
+    REQUIRE(!ecs_alive(&world, e1));
+    REQUIRE(ecs_alive(&world, e2));
+    REQUIRE(!ecs_alive(&world, e3));
+
+    ecs_world_destroy(&world);
+    return true;
+}
+
+TEST_CASE(test_arch_parallel_for_threaded)
+{
+    ecs_world world = {0};
+    tpool_t *pool = tpool_new(4, 256);
+
+    for (int i = 0; i < 200; i++) {
+        ecs_entity e = ecs_spawn(&world, Position, Velocity);
+        ecs_set(&world, e, (Position){ (float)i, 0.f });
+        ecs_set(&world, e, (Velocity){ 1.f, 0.f });
+    }
+
+    ecs_set_threads(&world, test_enqueue_, test_wait_, pool, 4);
+    ecs_set_min_entities_per_task(&world, 32);
+
+    ecs_parallel_for(&world, par_move, Position, Velocity);
+
+    for (int i = 0; i < 200; i++) {
+        ecs_entity e = { .id = i + 1, .gen = 1 };
+        REQUIRE(ecs_get_position(&world, e)->x == (float)i + 1.f);
+    }
+
+    tpool_destroy(pool);
+    ecs_world_destroy(&world);
+    return true;
+}
+
+TEST_CASE(test_arch_parallel_for_kill_threaded)
+{
+    ecs_world world = {0};
+    tpool_t *pool = tpool_new(4, 256);
+
+    for (int i = 0; i < 200; i++) {
+        ecs_entity e = ecs_spawn(&world, Health);
+        ecs_set(&world, e, (Health){ (i % 2 == 0) ? 0 : 100 });
+    }
+
+    ecs_set_threads(&world, test_enqueue_, test_wait_, pool, 4);
+    ecs_set_min_entities_per_task(&world, 32);
+
+    ecs_parallel_for(&world, par_cleanup, Health);
+
+    REQUIRE(world.alive_count == 100);
+
+    tpool_destroy(pool);
+    ecs_world_destroy(&world);
+    return true;
+}
+
 /* ---- Suite entry point ---- */
 
 void arch_ecs_suite()
@@ -625,4 +740,9 @@ void arch_ecs_suite()
     RUN_TEST_CASE(test_arch_kill_during_iteration_skips_dead);
     /* pointer stability */
     RUN_TEST_CASE(test_arch_spawn_during_iteration);
+    /* parallel_for */
+    RUN_TEST_CASE(test_arch_parallel_for_fallback);
+    RUN_TEST_CASE(test_arch_parallel_for_kill_fallback);
+    RUN_TEST_CASE(test_arch_parallel_for_threaded);
+    RUN_TEST_CASE(test_arch_parallel_for_kill_threaded);
 }
