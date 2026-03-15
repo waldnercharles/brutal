@@ -28,18 +28,10 @@
         ECS_FOR(&world, Position, pos)
         ECS_NONE_OF(Velocity) { ... }
 
-    PARALLEL ITERATION
-        void move(ecs_task *t) {
-            for (int i = 0; i < t->n; i++)
-                t->position[i].x += t->velocity[i].vx;
-        }
-        ecs_set_threads(&world, enqueue, wait, pool, 4);
-        ecs_parallel_for(&world, move, Position, Velocity);
-
     HANDLES
     ecs_entity is a thin (id, gen) pair — 8 bytes.
     ecs_alive() catches stale handles after kill or slot reuse.
-    Double-kill is safe. Kill-during-parallel-iteration uses per-task kill lists.
+    Double-kill is safe.
 */
 
 #include <assert.h>
@@ -54,12 +46,27 @@
 #ifndef ECS_MAX_ARCHETYPES
 #define ECS_MAX_ARCHETYPES 64
 #endif
-#ifndef ECS_MT_MAX_TASKS
-#define ECS_MT_MAX_TASKS 64
-#endif
-#ifndef ECS_MT_KILL_LIST_SIZE
-#define ECS_MT_KILL_LIST_SIZE 256
-#endif
+
+/* --- entity handle (always available) ------------------------- */
+
+#ifndef ARCH_ECS_ENTITY_H
+#define ARCH_ECS_ENTITY_H
+
+typedef uint64_t ecs_entity;
+#define ECS_NULL ((ecs_entity)0)
+
+/* Internal: union for field access within arch_ecs implementation. */
+typedef union {
+    struct { int id; uint16_t gen; uint16_t _pad; };
+    uint64_t bits;
+} ecs_entity_;
+
+static inline ecs_entity_ ecs_unpack_(ecs_entity e) { return (ecs_entity_){ .bits = e }; }
+static inline ecs_entity  ecs_pack_(int id, uint16_t gen) { return (ecs_entity_){ .id = id, .gen = gen }.bits; }
+
+typedef struct ecs_world ecs_world;
+
+#endif /* ARCH_ECS_ENTITY_H */
 
 #ifdef ECS_COMPONENTS
 #ifndef ARCH_ECS_H
@@ -95,13 +102,6 @@ static inline void ecs_vm_free_(void *p, size_t sz)
 /* --- internal variable prefix --------------------------------- */
 
 #define ECS_P_(name) _ecs_##name
-
-static _Thread_local int ecs_tls_task_index_;
-
-/* --- thread pool callbacks ------------------------------------ */
-
-typedef int (*ecs_enqueue_fn)(int (*fn)(void *), void *arg, void *udata);
-typedef void (*ecs_wait_fn)(void *udata);
 
 /* --- component IDs and masks (field-name based) --------------- */
 
@@ -141,16 +141,6 @@ _Static_assert(ECS_COMPONENT_COUNT <= 64, "max 64 components");
 #define ECS_TMASK_ALL_TYPES(...) (ECS_EVAL_(ECS_TMT_FOLD_(__VA_ARGS__)))
 /* clang-format on */
 
-/* --- entity handle (thin) ------------------------------------- */
-
-typedef struct
-{
-    int id;
-    uint16_t gen;
-} ecs_entity;
-
-#define ECS_NULL ((ecs_entity){ 0 })
-
 /* --- entity map ----------------------------------------------- */
 
 typedef struct
@@ -172,25 +162,6 @@ typedef struct
 #undef ECS_ARCH_COL_
 } ecs_archetype;
 
-/* --- world (forward decl) ------------------------------------ */
-
-typedef struct ecs_world ecs_world;
-
-/* --- task (parallel iteration slice) ------------------------- */
-
-typedef struct ecs_task ecs_task;
-struct ecs_task
-{
-    void (*fn)(ecs_task *);
-    ecs_world *w;
-    int n;
-    int *entity_ids;
-    int task_index;
-#define ECS_TASK_PTR_(T, f) T *f;
-    ECS_COMPONENTS(ECS_TASK_PTR_)
-#undef ECS_TASK_PTR_
-};
-
 /* --- world ---------------------------------------------------- */
 
 struct ecs_world
@@ -206,24 +177,15 @@ struct ecs_world
     int deferred_kills[ECS_MAX_ENTITIES];
     int deferred_kill_count;
     bool deferred_dead[ECS_MAX_ENTITIES];
-    /* threading */
-    ecs_enqueue_fn enqueue;
-    ecs_wait_fn wait;
-    void *task_udata;
-    int max_tasks;
-    int min_entities_per_task;
-    ecs_task par_tasks[ECS_MT_MAX_TASKS];
-    bool par_iterating;
-    int par_kills[ECS_MT_MAX_TASKS][ECS_MT_KILL_LIST_SIZE];
-    int par_kill_counts[ECS_MT_MAX_TASKS];
 };
 
 /* --- alive check ---------------------------------------------- */
 
 static inline bool ecs_alive(ecs_world *w, ecs_entity e)
 {
-    return e.id > 0 && e.id < ECS_MAX_ENTITIES &&
-           w->entities[e.id].gen == e.gen && !w->deferred_dead[e.id];
+    ecs_entity_ u = ecs_unpack_(e);
+    return u.id > 0 && u.id < ECS_MAX_ENTITIES &&
+           w->entities[u.id].gen == u.gen && !w->deferred_dead[u.id];
 }
 
 /* --- lock-free free list -------------------------------------- */
@@ -300,11 +262,15 @@ static inline ecs_entity ecs_spawn_(ecs_world *w, uint64_t mask)
     w->entities[id].row = row;
     atomic_fetch_add_explicit(&w->alive_count, 1, memory_order_relaxed);
 
-    return (ecs_entity){ .id = id, .gen = w->entities[id].gen };
+    return ecs_pack_(id, w->entities[id].gen);
 }
 
 /* clang-format off */
 #define ecs_spawn(w, ...) ecs_spawn_((w), ECS_TMASK_ALL_TYPES(__VA_ARGS__))
+
+/* Field-name-based spawn — avoids _Generic, works with type aliases.
+   Usage: ecs_spawn_f(w, transform, velocity, player_tag) */
+#define ecs_spawn_f(w, ...) ecs_spawn_((w), ECS_MASK_ALL(__VA_ARGS__))
 /* clang-format on */
 
 /* --- clone ---------------------------------------------------- */
@@ -312,10 +278,10 @@ static inline ecs_entity ecs_spawn_(ecs_world *w, uint64_t mask)
 static inline ecs_entity ecs_clone(ecs_world *w, ecs_entity src)
 {
     assert(ecs_alive(w, src));
-    ecs_entity_info *si = &w->entities[src.id];
+    ecs_entity_info *si = &w->entities[ecs_unpack_(src).id];
     ecs_archetype *sa = &w->archetypes[si->archetype];
     ecs_entity dst = ecs_spawn_(w, sa->mask);
-    ecs_entity_info *di = &w->entities[dst.id];
+    ecs_entity_info *di = &w->entities[ecs_unpack_(dst).id];
     ecs_archetype *da = &w->archetypes[di->archetype];
 #define ECS_CLONE_(T, f) \
     if (sa->mask & ECS_MASK(f)) da->f[di->row] = sa->f[si->row];
@@ -352,57 +318,19 @@ static inline void ecs_flush_kills_(ecs_world *w)
     w->deferred_kill_count = 0;
 }
 
-/* --- parallel kill flush ------------------------------------- */
-
-static inline void ecs_par_flush_kills_(ecs_world *w)
-{
-    int max = w->max_tasks > 0 ? w->max_tasks : 1;
-    for (int t = 0; t < max; t++) {
-        for (int k = 0; k < w->par_kill_counts[t]; k++) {
-            int id = w->par_kills[t][k];
-            ecs_entity_info *info = &w->entities[id];
-            ecs_archetype *arch = &w->archetypes[info->archetype];
-            int row = info->row;
-            int last = atomic_fetch_sub_explicit(&arch->count, 1, memory_order_relaxed) - 1;
-
-            if (row != last) {
-                int swapped_id = arch->entity_ids[last];
-                arch->entity_ids[row] = swapped_id;
-#define ECS_SWAP_(T, f)                                                        \
-    if (arch->mask & ECS_MASK(f)) arch->f[row] = arch->f[last];
-                ECS_COMPONENTS(ECS_SWAP_)
-#undef ECS_SWAP_
-                w->entities[swapped_id].row = row;
-            }
-
-            info->archetype = -1;
-            ecs_free_list_push_(w, id);
-            atomic_fetch_sub_explicit(&w->alive_count, 1, memory_order_relaxed);
-        }
-        w->par_kill_counts[t] = 0;
-    }
-}
-
 /* --- kill (swap-remove or deferred) --------------------------- */
 
 static inline void ecs_kill(ecs_world *w, ecs_entity e)
 {
     if (!ecs_alive(w, e)) return;
-    ecs_entity_info *info = &w->entities[e.id];
+    int eid = ecs_unpack_(e).id;
+    ecs_entity_info *info = &w->entities[eid];
 
     if (w->iterating) {
         info->gen++;
-        w->deferred_dead[e.id] = true;
-        w->deferred_kills[w->deferred_kill_count++] = e.id;
+        w->deferred_dead[eid] = true;
+        w->deferred_kills[w->deferred_kill_count++] = eid;
         atomic_fetch_sub_explicit(&w->alive_count, 1, memory_order_relaxed);
-        return;
-    }
-
-    if (w->par_iterating) {
-        info->gen++;
-        int task = ecs_tls_task_index_;
-        assert(w->par_kill_counts[task] < ECS_MT_KILL_LIST_SIZE);
-        w->par_kills[task][w->par_kill_counts[task]++] = e.id;
         return;
     }
 
@@ -422,7 +350,7 @@ static inline void ecs_kill(ecs_world *w, ecs_entity e)
 
     info->gen++;
     info->archetype = -1;
-    ecs_free_list_push_(w, e.id);
+    ecs_free_list_push_(w, eid);
     atomic_fetch_sub_explicit(&w->alive_count, 1, memory_order_relaxed);
 }
 
@@ -432,7 +360,7 @@ static inline void ecs_kill(ecs_world *w, ecs_entity e)
     static inline T *ecs_get_##f(ecs_world *w, ecs_entity e)                   \
     {                                                                          \
         assert(ecs_alive(w, e));                                               \
-        ecs_entity_info *info = &w->entities[e.id];                            \
+        ecs_entity_info *info = &w->entities[ecs_unpack_(e).id];               \
         ecs_archetype *arch = &w->archetypes[info->archetype];                 \
         assert(arch->mask & ECS_MASK(f));                                      \
         return &arch->f[info->row];                                            \
@@ -444,7 +372,7 @@ ECS_COMPONENTS(ECS_GET_IMPL_)
     static inline void ecs_set_##f(ecs_world *w, ecs_entity e, T val)          \
     {                                                                          \
         assert(ecs_alive(w, e));                                               \
-        ecs_entity_info *info = &w->entities[e.id];                            \
+        ecs_entity_info *info = &w->entities[ecs_unpack_(e).id];               \
         ecs_archetype *arch = &w->archetypes[info->archetype];                 \
         assert(arch->mask & ECS_MASK(f));                                      \
         arch->f[info->row] = val;                                              \
@@ -453,6 +381,7 @@ ECS_COMPONENTS(ECS_SET_IMPL_)
 #undef ECS_SET_IMPL_
 
 /* clang-format off */
+/* Generic setter: ecs_set(w, e, (Type){ ... }) */
 #define ECS_GENERIC_SET_(T, f) T: ecs_set_##f,
 #define ecs_set(w, e, ...)                                                     \
     _Generic((__VA_ARGS__),                                                    \
@@ -461,16 +390,40 @@ ECS_COMPONENTS(ECS_SET_IMPL_)
     )((w), (e), __VA_ARGS__)
 /* clang-format on */
 
+/* clang-format off */
+/* Token-pasting accessor: ECS_GET(w, e, TypeName) -> TypeName*
+   Maps Type to field via per-type macros generated from ECS_COMPONENTS. */
+#define ECS_GET_MAP_(T, f) static inline T *ecs__get_##T(ecs_world *w, ecs_entity e) { return ecs_get_##f(w, e); }
+ECS_COMPONENTS(ECS_GET_MAP_)
+#undef ECS_GET_MAP_
+
+#define ECS_GET(w, e, T) ecs__get_##T((w), (e))
+
+/* Token-pasting add (alias for get — component already in archetype) */
+#define ECS_ADD(w, e, T) ECS_GET(w, e, T)
+
+/* Token-pasting has check — uses field mask directly to avoid _Generic issues */
+#define ECS_HAS_MAP_(T, f)                                                     \
+    static inline bool ecs__has_##T(ecs_world *w, ecs_entity e) {              \
+        if (!ecs_alive(w, e)) return false;                                    \
+        return (w->archetypes[w->entities[ecs_unpack_(e).id].archetype].mask & ECS_MASK(f)) != 0; \
+    }
+ECS_COMPONENTS(ECS_HAS_MAP_)
+#undef ECS_HAS_MAP_
+
+#define ECS_HAS(w, e, T) ecs__has_##T((w), (e))
+/* clang-format on */
+
 /* --- queries -------------------------------------------------- */
 
 #define ecs_has(w, e, T)                                                       \
     (ecs_alive((w), (e)) &&                                                    \
-     ((w)->archetypes[(w)->entities[(e).id].archetype].mask &                  \
+     ((w)->archetypes[(w)->entities[ecs_unpack_(e).id].archetype].mask &       \
       ECS_TMASK_TYPE_(T)))
 
 #define ecs_has_all(w, e, ...)                                                 \
     (ecs_alive((w), (e)) &&                                                    \
-     (((w)->archetypes[(w)->entities[(e).id].archetype].mask &                 \
+     (((w)->archetypes[(w)->entities[ecs_unpack_(e).id].archetype].mask &      \
        ECS_TMASK_ALL_TYPES(__VA_ARGS__)) == ECS_TMASK_ALL_TYPES(__VA_ARGS__)))
 
 static inline ecs_entity ecs_first_(ecs_world *w, uint64_t mask)
@@ -480,7 +433,7 @@ static inline ecs_entity ecs_first_(ecs_world *w, uint64_t mask)
         ecs_archetype *arch = &w->archetypes[a];
         if ((arch->mask & mask) == mask && atomic_load_explicit(&arch->count, memory_order_relaxed) > 0) {
             int id = arch->entity_ids[0];
-            return (ecs_entity){ .id = id, .gen = w->entities[id].gen };
+            return ecs_pack_(id, w->entities[id].gen);
         }
     }
     return ECS_NULL;
@@ -508,16 +461,21 @@ static inline ecs_entity ecs_first_(ecs_world *w, uint64_t mask)
 */
 
 /* Type-to-field-pointer: resolve a type name to its SoA pointer.
-   ecs_entity maps to a compound-literal handle. */
-#define ECS_TYPE_FIELD_PTR_(T, f) T: &ECS_P_(arch)->f[ECS_P_(i)],
-#define ECS_RESOLVE_(TypeName) _Generic((TypeName){ 0 },                                    \
-    ECS_COMPONENTS(ECS_TYPE_FIELD_PTR_)                                                      \
-    ecs_entity: (ecs_entity[1]){ { .id  = ECS_P_(arch)->entity_ids[ECS_P_(i)],               \
-                                   .gen = ECS_P_(w)->entities[ECS_P_(arch)->entity_ids[ECS_P_(i)]].gen } }, \
-    default: (void *)0)
+   Uses ECS_TR_##TypeName macros (defined in ecs_components.h alongside ECS_TF_).
+   Each ECS_TR_<Type> expands to the SoA field access expression.
+   ecs_entity has ECS_TR_ecs_entity returning a compound-literal entity handle. */
+#define ECS_TR_FIELD_(f) &ECS_P_(arch)->f[ECS_P_(i)]
+#define ECS_TR_ecs_entity \
+    (ecs_entity[1]){ ecs_pack_(ECS_P_(arch)->entity_ids[ECS_P_(i)],               \
+                               ECS_P_(w)->entities[ECS_P_(arch)->entity_ids[ECS_P_(i)]].gen) }
+#define ECS_RESOLVE_(TypeName) ECS_TR_##TypeName
 
-/* Flat-pair mask fold: consume (Type, name) pairs, ignore name. */
-#define ECS_PM_FOLD_(T, name, ...) ECS_TMASK_TYPE_(T) __VA_OPT__(| ECS_M_DEFER_(ECS_PM_FOLD_C_)()(__VA_ARGS__))
+/* Flat-pair mask fold: consume (Type, name) pairs, map Type to field via ECS_TF_##T.
+   ECS_MASK_IND_ forces expansion of ECS_TF_##T before token-pasting with ECS_ID_##.
+   ecs_entity contributes 0 via _Generic (unique type, no collision risk). */
+#define ECS_MASK_IND_(f) ECS_MASK(f)
+#define ECS_PMASK_ONE_(T) _Generic((T){0}, ecs_entity: (uint64_t)0, default: ECS_MASK_IND_(ECS_TF_##T))
+#define ECS_PM_FOLD_(T, name, ...) ECS_PMASK_ONE_(T) __VA_OPT__(| ECS_M_DEFER_(ECS_PM_FOLD_C_)()(__VA_ARGS__))
 #define ECS_PM_FOLD_C_() ECS_PM_FOLD_
 #define ECS_PMASK_ALL(...) (ECS_EVAL_(ECS_PM_FOLD_(__VA_ARGS__)))
 
@@ -547,105 +505,10 @@ static inline ecs_entity ecs_first_(ecs_world *w, uint64_t mask)
 /* ECS_NONE_OF — exclude by type names. */
 #define ECS_NONE_OF(...) if (!(ECS_P_(arch)->mask & ECS_TMASK_ALL_TYPES(__VA_ARGS__)))
 
-/* --- ecs_parallel_for ----------------------------------------- */
-/*
-    void move(ecs_task *t) {
-        for (int i = 0; i < t->n; i++)
-            t->position[i].x += t->velocity[i].vx;
-    }
-    ecs_parallel_for(&world, move, Position, Velocity);
-
-    Falls back to single-threaded if no enqueue callback is set.
-    ecs_kill_id during parallel iteration is safe (per-task kill lists).
-*/
-
-/* Fill task component pointers from archetype + start offset.
-   ECS_PFILL_IMPL_ must stay defined (expanded at each call site). */
-#define ECS_PFILL_IMPL_(T, f)                                                  \
-    ECS_P_(w)->par_tasks[ECS_P_(pt)].f =                                      \
-        (ECS_P_(pa)->mask & ECS_MASK(f))                                       \
-            ? &ECS_P_(pa)->f[ECS_P_(ps)] : NULL;
-#define ECS_PFILL_SET_(arch_, start_, tidx_)                                   \
-    { ecs_archetype *ECS_P_(pa) = (arch_);                                     \
-      int ECS_P_(ps) = (start_), ECS_P_(pt) = (tidx_);                        \
-      ECS_COMPONENTS(ECS_PFILL_IMPL_) }
-
-#define ecs_parallel_for(world, sys_fn, ...) do {                                                                          \
-    ecs_world *ECS_P_(w) = (world);                                                                                        \
-    uint64_t ECS_P_(mask) = ECS_TMASK_ALL_TYPES(__VA_ARGS__);                                                              \
-    ECS_P_(w)->par_iterating = true;                                                                                       \
-    for (int ECS_P_(a) = 0; ECS_P_(a) < ECS_P_(w)->archetype_count; ECS_P_(a)++) {                                          \
-        ecs_archetype *ECS_P_(arch) = &ECS_P_(w)->archetypes[ECS_P_(a)];                                                    \
-        int ECS_P_(cnt) = atomic_load_explicit(&ECS_P_(arch)->count, memory_order_relaxed);                                                                  \
-        if ((ECS_P_(arch)->mask & ECS_P_(mask)) != ECS_P_(mask) || ECS_P_(cnt) == 0) continue;                                \
-        int ECS_P_(tc) = ecs_compute_tasks_(ECS_P_(w), ECS_P_(cnt));                                                         \
-        for (int ECS_P_(t) = 0; ECS_P_(t) < ECS_P_(tc); ECS_P_(t)++) {                                                      \
-            int ECS_P_(start) = (ECS_P_(cnt) * ECS_P_(t)) / ECS_P_(tc);                                                     \
-            int ECS_P_(end) = (ECS_P_(cnt) * (ECS_P_(t) + 1)) / ECS_P_(tc);                                                 \
-            ECS_P_(w)->par_tasks[ECS_P_(t)].fn = (sys_fn);                                                                 \
-            ECS_P_(w)->par_tasks[ECS_P_(t)].w = ECS_P_(w);                                                                 \
-            ECS_P_(w)->par_tasks[ECS_P_(t)].n = ECS_P_(end) - ECS_P_(start);                                               \
-            ECS_P_(w)->par_tasks[ECS_P_(t)].entity_ids = &ECS_P_(arch)->entity_ids[ECS_P_(start)];                          \
-            ECS_P_(w)->par_tasks[ECS_P_(t)].task_index = ECS_P_(t);                                                        \
-            ECS_PFILL_SET_(ECS_P_(arch), ECS_P_(start), ECS_P_(t))                                                          \
-            if (ECS_P_(w)->enqueue)                                                                                         \
-                ECS_P_(w)->enqueue(ecs_par_trampoline_, &ECS_P_(w)->par_tasks[ECS_P_(t)], ECS_P_(w)->task_udata);            \
-            else {                                                                                                          \
-                ecs_tls_task_index_ = ECS_P_(t);                                                                            \
-                (sys_fn)(&ECS_P_(w)->par_tasks[ECS_P_(t)]);                                                                 \
-            }                                                                                                               \
-        }                                                                                                                   \
-        if (ECS_P_(w)->enqueue) ECS_P_(w)->wait(ECS_P_(w)->task_udata);                                                     \
-    }                                                                                                                       \
-    ecs_par_flush_kills_(ECS_P_(w));                                                                                        \
-    ECS_P_(w)->par_iterating = false;                                                                                       \
-} while (0)
+/* ECS_NONE_OF_F — exclude by field names (avoids _Generic for aliased types). */
+#define ECS_NONE_OF_F(...) if (!(ECS_P_(arch)->mask & ECS_MASK_ALL(__VA_ARGS__)))
 
 // clang-format on
-
-/* --- parallel helpers ----------------------------------------- */
-
-static int ecs_par_trampoline_(void *arg)
-{
-    ecs_task *t = arg;
-    ecs_tls_task_index_ = t->task_index;
-    t->fn(t);
-    return 0;
-}
-
-static inline int ecs_compute_tasks_(ecs_world *w, int count)
-{
-    int min_per = w->min_entities_per_task > 0 ? w->min_entities_per_task : 64;
-    int max = w->max_tasks > 0 ? w->max_tasks : 1;
-    int tc = (count + min_per - 1) / min_per;
-    if (tc < 1) tc = 1;
-    if (tc > max) tc = max;
-    return tc;
-}
-
-/* --- thread setup --------------------------------------------- */
-
-static inline void ecs_set_threads(ecs_world *w, ecs_enqueue_fn enqueue,
-                                   ecs_wait_fn wait, void *udata,
-                                   int max_tasks)
-{
-    w->enqueue = enqueue;
-    w->wait = wait;
-    w->task_udata = udata;
-    w->max_tasks = max_tasks > ECS_MT_MAX_TASKS ? ECS_MT_MAX_TASKS : max_tasks;
-}
-
-static inline void ecs_set_min_entities_per_task(ecs_world *w, int min_count)
-{
-    w->min_entities_per_task = min_count;
-}
-
-/* --- kill by id (for parallel iteration) ---------------------- */
-
-static inline void ecs_kill_id(ecs_world *w, int id)
-{
-    ecs_kill(w, (ecs_entity){ .id = id, .gen = w->entities[id].gen });
-}
 
 /* --- cleanup -------------------------------------------------- */
 
@@ -665,6 +528,6 @@ static inline void ecs_world_destroy(ecs_world *w)
 }
 
 #endif /* ARCH_ECS_H */
-#else
+#elif !defined(ARCH_ECS_ENTITY_H)
 #error "Define ECS_COMPONENTS(X) before including arch_ecs.h"
 #endif /* ECS_COMPONENTS */
