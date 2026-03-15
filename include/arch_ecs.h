@@ -399,6 +399,13 @@ ECS_COMPONENTS(ECS_GET_MAP_)
 
 #define ECS_GET(w, e, T) ecs__get_##T((w), (e))
 
+/* Token-pasting setter: ECS_SET(w, e, Type, value) — avoids _Generic issues with aliased types */
+#define ECS_SET_MAP_(T, f) static inline void ecs__set_##T(ecs_world *w, ecs_entity e, T val) { ecs_set_##f(w, e, val); }
+ECS_COMPONENTS(ECS_SET_MAP_)
+#undef ECS_SET_MAP_
+
+#define ECS_SET(w, e, T, ...) ecs__set_##T((w), (e), (__VA_ARGS__))
+
 /* Token-pasting add (alias for get — component already in archetype) */
 #define ECS_ADD(w, e, T) ECS_GET(w, e, T)
 
