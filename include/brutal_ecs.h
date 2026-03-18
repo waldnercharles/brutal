@@ -77,6 +77,10 @@ typedef void (*ecs_wait_tasks_fn)(void *udata);
 #include <stdbool.h>
 #include <stdint.h>
 
+#ifndef ECS_MAX_COMPONENTS
+#define ECS_MAX_COMPONENTS 64
+#endif
+
 // clang-format off
 // Component ID macros — derive a variable name from the type
 #define ECS_COMP_ID(Type)       _ecs_comp_##Type
@@ -111,12 +115,30 @@ void ecs_set_min_entities_per_task(ecs_t *ecs, int min_count);
 ecs_entity ecs_create(ecs_t *ecs);
 void ecs_destroy(ecs_t *ecs, ecs_entity e);
 
+// Prototype entities — invisible to all systems, used as spawn prototypes
+ecs_entity ecs_create_prototype(ecs_t *ecs);
+bool ecs_is_prototype(ecs_t *ecs, ecs_entity e);
+
+// Clone — deep-copy all components from src into a new (non-prototype) entity
+ecs_entity ecs_clone(ecs_t *ecs, ecs_entity src);
+
+// Introspection — fill out[] with component IDs entity has, return count
+int ecs_get_components(ecs_t *ecs, ecs_entity e, ecs_comp_t *out, int max);
+
+// Component pool access (for cloning/introspection)
+int ecs_comp_size(ecs_t *ecs, ecs_comp_t comp);
+
 // Components
 ecs_comp_t ecs_register_component(ecs_t *ecs, int size);
 void *ecs_add(ecs_t *ecs, ecs_entity entity, ecs_comp_t component);
 void ecs_remove(ecs_t *ecs, ecs_entity entity, ecs_comp_t component);
 void *ecs_get(ecs_t *ecs, ecs_entity entity, ecs_comp_t component);
 bool ecs_has(ecs_t *ecs, ecs_entity entity, ecs_comp_t component);
+
+// Alive entity iteration
+int ecs_alive_count(ecs_t *ecs);
+const ecs_entity *ecs_alive_entities(ecs_t *ecs);
+bool ecs_is_alive(ecs_t *ecs, ecs_entity e);
 
 // Systems
 ecs_sys_t ecs_sys_create_(ecs_t *ecs, ecs_system_fn fn, void *udata, const char *name);
@@ -159,10 +181,6 @@ int ecs_system_count(ecs_t *ecs);
 
 // -----------------------------------------------------------------------------
 //  Configuration
-
-#ifndef ECS_MAX_COMPONENTS
-#define ECS_MAX_COMPONENTS 64
-#endif
 
 #ifndef ECS_MAX_SYSTEMS
 #define ECS_MAX_SYSTEMS 256
@@ -635,6 +653,12 @@ struct ecs_s
     int max_task_count;
     int min_entities_per_task;
 
+    // Alive entities
+    ecs_sparse_set alive;
+
+    // Prototype entities (excluded from system matching)
+    ecs_sparse_set prototypes;
+
     uint64_t (*get_ticks)();
     bool in_progress;
 
@@ -771,16 +795,18 @@ static inline void ecs_rebuild_system_matched(ecs_t *ecs, ecs_system *s)
 
     int n = atomic_load(&ecs->next_entity);
     for (int e = 1; e < n && e < ecs->entity_bits_cap; e++) {
-        if (ecs_entity_matches_system(ecs, e, s)) ecs_ss_insert(&s->matched, e);
+        if (ecs_ss_has(&ecs->prototypes, e)) continue;
+        if (ecs_entity_matches_system(ecs, e, s))
+            ecs_ss_insert(&s->matched, e);
     }
 }
 
 static inline void ecs_sync_entity_systems(ecs_t *ecs, ecs_entity entity)
 {
+    if (ecs_ss_has(&ecs->prototypes, entity)) return;
     for (int i = 0; i < ecs->system_count; i++) {
         ecs_system *s = &ecs->systems[i];
         if (ecs_bs_none(&s->all_of)) continue;
-
         bool in_set = ecs_ss_has(&s->matched, entity);
         bool matches = ecs_entity_matches_system(ecs, entity, s);
 
@@ -885,16 +911,7 @@ static inline int ecs_run_system_task(void *args_v)
     ecs_system *s = &ecs->systems[args->sys_index];
 
     int count = s->matched.count;
-    if (!count) {
-        if (args->task_index == 0 && ecs_bs_none(&s->all_of)) {
-            ecs_set_tls_task_index(0);
-            ecs_view view = { .entities = NULL, .count = 0 };
-            int ret = s->fn(ecs, &view, s->udata);
-            ecs_set_tls_task_index(0);
-            return ret;
-        }
-        return 0;
-    }
+    if (!count) return 0;
 
     ecs_set_tls_task_index(args->task_index);
 
@@ -932,6 +949,9 @@ ecs_t *ecs_new()
     ecs->free_list_next = malloc((size_t)ecs->free_list_capacity * sizeof(int));
     assert(ecs->free_list_next);
 
+    ecs_ss_init(&ecs->alive);
+    ecs_ss_init(&ecs->prototypes);
+
     for (int i = 0; i < ECS_MT_MAX_TASKS; i++) {
         ecs_cmd_buffer_init(&ecs->cmd_buffers[i], ECS_CMD_BUFFER_CAPACITY);
     }
@@ -946,6 +966,8 @@ void ecs_free(ecs_t *ecs)
 
     for (int i = 0; i < ecs->comp_count; i++)
         ecs_pool_free(&ecs->components[i]);
+    ecs_ss_free(&ecs->alive);
+    ecs_ss_free(&ecs->prototypes);
     free(ecs->free_list_next);
     free(ecs->entity_bits);
 
@@ -982,6 +1004,7 @@ ecs_entity ecs_create(ecs_t *ecs)
 {
     ecs_entity e = ecs_free_list_pop(ecs);
     if (!e) e = atomic_fetch_add(&ecs->next_entity, 1);
+    ecs_ss_insert(&ecs->alive, e);
     return e;
 }
 
@@ -991,6 +1014,9 @@ void ecs_destroy(ecs_t *ecs, ecs_entity e)
         ecs_destroy_deferred(ecs, e);
         return;
     }
+
+    ecs_ss_remove(&ecs->alive, e);
+    ecs_ss_remove(&ecs->prototypes, e);
 
     for (int i = 0; i < ecs->system_count; i++)
         ecs_ss_remove(&ecs->systems[i].matched, e);
@@ -1225,6 +1251,71 @@ uint64_t ecs_sys_get_ticks(ecs_t *ecs, ecs_sys_t sys)
 int ecs_system_count(ecs_t *ecs)
 {
     return ecs->system_count;
+}
+
+int ecs_alive_count(ecs_t *ecs)
+{
+    return ecs->alive.count;
+}
+
+const ecs_entity *ecs_alive_entities(ecs_t *ecs)
+{
+    return ecs->alive.dense;
+}
+
+bool ecs_is_alive(ecs_t *ecs, ecs_entity e)
+{
+    return ecs_ss_has(&ecs->alive, e);
+}
+
+ecs_entity ecs_create_prototype(ecs_t *ecs)
+{
+    ecs_entity e = ecs_create(ecs);
+    ecs_ss_insert(&ecs->prototypes, e);
+    return e;
+}
+
+bool ecs_is_prototype(ecs_t *ecs, ecs_entity e)
+{
+    return ecs_ss_has(&ecs->prototypes, e);
+}
+
+ecs_entity ecs_clone(ecs_t *ecs, ecs_entity src)
+{
+    assert(src < ecs->entity_bits_cap);
+    ecs_entity dst = ecs_create(ecs);
+    ecs_ensure_entity_bits(ecs, dst);
+
+    ECS_BS_FOREACH(&ecs->entity_bits[src], comp)
+    {
+        assert(comp < ecs->comp_count);
+        ecs_pool *pool = &ecs->components[comp];
+        void *dst_data = ecs_pool_add(pool, dst);
+        void *src_data = ecs_pool_get(pool, src);
+        memcpy(dst_data, src_data, (size_t)pool->element_size);
+        ecs_bs_set(&ecs->entity_bits[dst], comp);
+    }
+
+    ecs_sync_entity_systems(ecs, dst);
+    return dst;
+}
+
+int ecs_get_components(ecs_t *ecs, ecs_entity e, ecs_comp_t *out, int max)
+{
+    if (e >= ecs->entity_bits_cap) return 0;
+    int count = 0;
+    ECS_BS_FOREACH(&ecs->entity_bits[e], comp)
+    {
+        if (count >= max) break;
+        out[count++] = (ecs_comp_t)comp;
+    }
+    return count;
+}
+
+int ecs_comp_size(ecs_t *ecs, ecs_comp_t comp)
+{
+    assert(comp < ecs->comp_count);
+    return ecs->components[comp].element_size;
 }
 
 #endif // BRUTAL_ECS_IMPLEMENTATION

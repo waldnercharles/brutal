@@ -947,14 +947,11 @@ BENCH_CASE(bench_deferred_workload_scheduler)
 
 static void run_ecs_benchmarks(bench_ctx *ctx)
 {
-    /* RUN_BENCH_CASE(bench_create, setup, teardown, ctx); */
-    /* RUN_BENCH_CASE(bench_create_destroy, setup, teardown, ctx); */
-    /* RUN_BENCH_CASE(bench_create_with_two_components, setup, teardown, ctx); */
-    /* RUN_BENCH_CASE(bench_destroy_with_two_components, setup_destroy_with_two_components, teardown, ctx); */
-    /* RUN_BENCH_CASE(bench_add_remove, setup, teardown, ctx); */
-    /* RUN_BENCH_CASE(bench_add_assign, setup, teardown, ctx); */
-    /* RUN_BENCH_CASE(bench_get, setup_get, teardown, ctx); */
-    /* RUN_BENCH_CASE(bench_queue_destroy, setup, teardown, ctx); */
+    RUN_BENCH_CASE(bench_create, setup, teardown, ctx);
+    RUN_BENCH_CASE(bench_create_destroy, setup, teardown, ctx);
+    RUN_BENCH_CASE(bench_create_with_two_components, setup, teardown, ctx);
+    RUN_BENCH_CASE(bench_destroy_with_two_components, setup_destroy_with_two_components, teardown, ctx);
+    RUN_BENCH_CASE(bench_get, setup_get, teardown, ctx);
     RUN_BENCH_CASE(bench_three_systems, setup_three_systems, teardown, ctx);
     // RUN_BENCH_CASE(bench_three_systems_scheduler, setup_three_systems, teardown, ctx);
     /* RUN_BENCH_CASE(bench_many_readers, setup_many_readers, teardown, ctx); */

@@ -860,6 +860,51 @@ TEST_CASE(test_mt_many_systems_batching)
     return true;
 }
 
+// ---- Clone Tests ----
+
+TEST_CASE(test_clone_preserves_data)
+{
+    ecs_t *ecs = ecs_new();
+
+    ecs_comp_t pos_comp = ecs_register_component(ecs, sizeof(Position));
+    ecs_comp_t vel_comp = ecs_register_component(ecs, sizeof(Velocity));
+    ecs_comp_t hp_comp = ecs_register_component(ecs, sizeof(Health));
+
+    ecs_entity src = ecs_create(ecs);
+    Position *pos = (Position *)ecs_add(ecs, src, pos_comp);
+    pos->x = 42;
+    pos->y = 99;
+
+    Velocity *vel = (Velocity *)ecs_add(ecs, src, vel_comp);
+    vel->vx = 7;
+    vel->vy = -3;
+
+    Health *hp = (Health *)ecs_add(ecs, src, hp_comp);
+    hp->health = 100.0f;
+
+    // Clone — pools start at capacity 1, so this forces realloc
+    ecs_entity dst = ecs_clone(ecs, src);
+    REQUIRE(dst != src);
+
+    Position *dst_pos = (Position *)ecs_get(ecs, dst, pos_comp);
+    Velocity *dst_vel = (Velocity *)ecs_get(ecs, dst, vel_comp);
+    Health *dst_hp = (Health *)ecs_get(ecs, dst, hp_comp);
+
+    REQUIRE(dst_pos->x == 42);
+    REQUIRE(dst_pos->y == 99);
+    REQUIRE(dst_vel->vx == 7);
+    REQUIRE(dst_vel->vy == -3);
+    REQUIRE(dst_hp->health == 100.0f);
+
+    // Source unchanged
+    Position *src_pos = (Position *)ecs_get(ecs, src, pos_comp);
+    REQUIRE(src_pos->x == 42);
+    REQUIRE(src_pos->y == 99);
+
+    ecs_free(ecs);
+    return true;
+}
+
 // ---- Test Suite ----
 
 TEST_SUITE(ecs_suite)
@@ -887,4 +932,6 @@ TEST_SUITE(ecs_suite)
     RUN_TEST_CASE(test_mt_independent_systems_parallel);
     RUN_TEST_CASE(test_mt_conflicting_systems_staged);
     RUN_TEST_CASE(test_mt_many_systems_batching);
+
+    RUN_TEST_CASE(test_clone_preserves_data);
 }

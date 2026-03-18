@@ -8,6 +8,8 @@
 extern void ecs_suite();
 extern void tpool_suite();
 extern void dyna_suite();
+extern void fat_ecs_suite();
+extern void arch_ecs_suite();
 
 int main()
 {
@@ -16,6 +18,8 @@ int main()
     RUN_TEST_SUITE(ecs_suite);
     RUN_TEST_SUITE(tpool_suite);
     RUN_TEST_SUITE(dyna_suite);
+    RUN_TEST_SUITE(fat_ecs_suite);
+    RUN_TEST_SUITE(arch_ecs_suite);
 
     pu_print_stats();
     return pu_test_failed();
